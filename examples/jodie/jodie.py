@@ -52,7 +52,7 @@ class JODIE(nn.Module):
         embed = self.project_embed(batch, embed, embed_ts)
         scores = self.edge_predictor(embed[:size], embed[size:2 * size])
         if batch.neg_nodes is not None:
-            scores = (scores, self.edge_predictor(embed[:size], embed[2 * size]))
+            scores = (scores, self.edge_predictor(embed[:size], embed[2 * size: ]))
         del embed_ts
         del embed
 
