@@ -63,7 +63,7 @@ TIME_WINDOW: int = int(args.time_window)
 
 ### load data
 
-g = support.load_graph(os.path.join(DATA_PATH, f'data/{DATA}/edges.csv'))
+g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
 support.load_feats(g, DATA, DATA_PATH)
 dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
 dim_nfeat = g.nfeat.shape[1]

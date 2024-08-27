@@ -39,6 +39,11 @@ class TGraph(object):
         self._compute_dev = torch.device('cpu')
 
     @property
+    def get_device(self):
+        print(self._edges.device)
+        return self.device
+
+    @property
     def efeat(self) -> Optional[Tensor]:
         """Returns edge feature"""
         return self._efeat_frame.get('f')

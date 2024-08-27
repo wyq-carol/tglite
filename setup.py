@@ -18,7 +18,7 @@ def main():
                     "lib/utils.cpp"
                 ],
                 include_dirs=[curr_dir/"include/"],
-                extra_compile_args=["-std=c++14", "-fopenmp"],
+                extra_compile_args=["-std=c++17", "-fopenmp"],
                 extra_link_args=["-fopenmp"]
             )],
         cmdclass={

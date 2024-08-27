@@ -190,9 +190,30 @@ def dedup(blk: TBlock) -> TBlock:
     '''
     if blk.num_dst() == 0:
         return blk
+    # import pdb; pdb.set_trace()
     nodes = blk._dstnodes
     times = blk._dsttimes
+    print(f"dstnodes.size={nodes.size}, times.size={times.size}")
+    if blk._srcnodes is not None:
+        print(f"srcnodes.size={blk._srcnodes.size}")
+    if blk.eid is not None:
+        print(f"eid.size={blk.eid.size}")
     has_dups, nodes, times, inv_idx = _c.dedup_targets(nodes, times)
+
+    def check_duplicates(lst, num):
+        # 分成三部分
+        first_part = lst[:int(num/3)]
+        middle_part = lst[int(num/3):int(num/3*2)]
+        last_part = lst[int(num/3*2):]
+        # 检查每一部分是否有重复项
+        first_part_has_duplicates = len(first_part) != len(set(first_part))
+        middle_part_has_duplicates = len(middle_part) != len(set(middle_part))
+        last_part_has_duplicates = len(last_part) != len(set(last_part))
+        return first_part_has_duplicates, middle_part_has_duplicates, last_part_has_duplicates
+    
+    print(f"after-dup dstnodes.size={nodes.size}, times.size={times.size}")
+    first, second, third = check_duplicates(inv_idx, len(nodes))
+    print([first, second, third])
     if has_dups:
         blk._replace_dst(nodes, times)
         blk.register_hook(_DedupInvertHook(inv_idx))

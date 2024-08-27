@@ -64,22 +64,22 @@ def load_graph(path: Union[str, Path]) -> tg.TGraph:
 
 def load_feats(g: tg.TGraph, d: str, data_path: str=''):
     """
-    Load edge features and node features to g from data/{d}/edge_features.pt and
-    data/{d}/edge_features.pt. If no file, create random edge and node features for data 'mooc',
+    Load edge features and node features to g from /home/volume/{d}/edge_features.pt and
+    /home/volume/{d}/edge_features.pt. If no file, create random edge and node features for data 'mooc',
     'lastfm' and 'wiki-talk', create random edge features for data 'wiki' and 'reddit', None for
     other data.
     """
     edge_feats = None
     node_feats = None
 
-    if Path(os.path.join(data_path, f'data/{d}/edge_features.pt')).exists():
-        edge_feats = torch.load(os.path.join(data_path, f'data/{d}/edge_features.pt'))
+    if Path(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt')).exists():
+        edge_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt'))
         edge_feats = edge_feats.type(torch.float32)
     elif d in ['mooc', 'lastfm', 'wiki-talk']:
         edge_feats = torch.randn(g.num_edges(), 128, dtype=torch.float32)
 
-    if Path(os.path.join(data_path, f'data/{d}/node_features.pt')).exists():
-        node_feats = torch.load(os.path.join(data_path, f'data/{d}/node_features.pt'))
+    if Path(os.path.join(data_path, f'/home/volume/{d}/node_features.pt')).exists():
+        node_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/node_features.pt'))
         node_feats = node_feats.type(torch.float32)
     elif d in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk']:
         node_feats = torch.randn(g.num_nodes(), edge_feats.shape[1], dtype=torch.float32)
@@ -132,6 +132,7 @@ class LinkPredTrainer(object):
         self.model_mem_path = model_mem_path
 
     def train(self):
+        # import pdb; pdb.set_trace()
         tt.csv_open('out-stats.csv')
         tt.csv_write_header()
         best_epoch = 0
@@ -151,14 +152,19 @@ class LinkPredTrainer(object):
             epoch_loss = 0.0
             t_loop = tt.start()
             for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
+
                 t_start = tt.start()
                 batch.neg_nodes = self.neg_sampler(len(batch))
-                tt.t_prep_batch += tt.elapsed(t_start)
+                time = tt.elapsed(t_start)
+                tt.t_prep_batch += time
+                tt.t_prep_batch_list.append(time)
 
                 t_start = tt.start()
                 self.optimizer.zero_grad()
                 pred_pos, pred_neg = self.model(batch)
-                tt.t_forward += tt.elapsed(t_start)
+                time = tt.elapsed(t_start)
+                tt.t_forward += time
+                tt.t_forward_list.append(time)
 
                 t_start = tt.start()
                 loss = self.criterion(pred_pos, torch.ones_like(pred_pos))
@@ -166,7 +172,14 @@ class LinkPredTrainer(object):
                 epoch_loss += float(loss)
                 loss.backward()
                 self.optimizer.step()
-                tt.t_backward += tt.elapsed(t_start)
+                time = tt.elapsed(t_start)
+                tt.t_backward += time
+                tt.t_backward_list.append(time)
+                tt.print_batch()
+                tt.reset_batch()
+                
+            # print("for each batch:")
+
             tt.t_loop = tt.elapsed(t_loop)
 
             t_eval = tt.start()

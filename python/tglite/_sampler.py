@@ -43,5 +43,7 @@ class TSampler(object):
                 block.copy_srcnodes(),
                 block.copy_eid(),
                 block.copy_ets())
-        tt.t_sample += tt.elapsed(t_start)
+        time = tt.elapsed(t_start)
+        tt.t_sample += time
+        tt.t_sample_list.append(time)
         return blk

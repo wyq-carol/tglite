@@ -351,21 +351,60 @@ class TBlock(object):
         self._dsttimes = dsttimes
         self._dstdata = TFrame(len(dstnodes))
 
+    
+    
     def _load_efeat(self, use_pin=False):
         """Loads the edge features to the TGraph's computation device."""
         if self._c_efeat is None and self._g.efeat is not None:
+            print(f"load_efeat: {self._eid.size}")
             self._c_efeat = self._load_feat(
                 self._g.efeat, self._eid, use_pin,
                 self._ctx._get_efeat_pin)
 
     def _load_nfeat(self, use_pin=False):
         """Loads the node features to the TGraph's computation device."""
+        
+        # 对于每个block load allnodes srcnodes+dstnodes
         if self._c_nfeat is None and self._g.nfeat is not None:
+            print(f"load_nfeat: {int(self.allnodes().size()[0])}")
             self._c_nfeat = self._load_feat(
                 self._g.nfeat, self.allnodes().cpu().numpy(), use_pin,
                 self._ctx._get_nfeat_pin)
 
     def _load_feat(self, feat: Tensor, idx: np.ndarray, use_pin: bool, pin_getter: Callable) -> Tensor:
+        def get_unique_element_count(tensor):
+            """
+            返回张量中唯一元素的数量。
+            
+            参数:
+                tensor (torch.Tensor): 输入的张量。
+                
+            返回:
+                int: 唯一元素的数量。
+            """
+            # 获取唯一元素
+            unique_elements = torch.unique(tensor)
+            
+            # 返回唯一元素的数量
+            return len(unique_elements)
+        def count_zero_rows(tensor):
+            """
+            计算二维张量中全0行的数量。
+            
+            参数:
+                tensor (torch.Tensor): 输入的二维张量。
+                
+            返回:
+                int: 全0行的数量。
+            """
+            # 检查张量是否为二维
+            if tensor.dim() != 2:
+                raise ValueError("输入的张量必须是二维的。")
+            # 使用 torch.all 沿着列方向（dim=1）检查哪些行全为0
+            zero_rows = torch.all(tensor == 0, dim=1)
+            # 计算全0行的数量
+            count_zero_rows = torch.sum(zero_rows).item()
+            return count_zero_rows
         """Loads selected feature data from the TGraph's storage device to computation device.
 
         :param Tensor feat: Feature tensor.
@@ -379,8 +418,16 @@ class TBlock(object):
         sdev = self._g.storage_device()
         cdev = self._g.compute_device()
         idx = torch.from_numpy(idx).long()
+        no_dup_idx = get_unique_element_count(idx)
         if sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
             pin = pin_getter(self.layer, len(idx), feat.shape[1])
+            print(f"here idx.size {len(idx)} pin.size {int(pin.size()[0])} no_dup_pin.size {no_dup_idx} pin_zero.size {count_zero_rows(pin)}")
+            tt.t_load += len(idx)
+            # 未包括不同block间的重复
+            tt.t_load_dup += len(idx) - no_dup_idx
+            tt.t_load_zero += count_zero_rows(pin)
+            # print(f"pin {pin}")
+            # 统计pin全0的行数
             torch.index_select(feat, 0, idx, out=pin)
             data = pin.to(cdev, non_blocking=True)
         else:

@@ -102,6 +102,7 @@ class TemporalAttnLayer(torch.nn.Module):
             out = torch.zeros(blk.num_dst(), self.dim_out, dtype=torch.float32, device=dev)
             out = torch.cat([out, blk.dstdata['h']], dim=1)
         else:
+            # import pdb;pdb.set_trace()
             t_start = tt.start()
             zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
             tt.t_time_zero += tt.elapsed(t_start)
@@ -109,6 +110,7 @@ class TemporalAttnLayer(torch.nn.Module):
             nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
             tt.t_time_nbrs += tt.elapsed(t_start)
             t_start = tt.start()
+
             Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
             if self.dim_edge > 0:
                 Z = torch.cat([blk.srcdata['h'], blk.efeat(), nbrs_time_feat], dim=1)

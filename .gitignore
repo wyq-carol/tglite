@@ -16,3 +16,10 @@ examples/data
 examples/models/
 examples/out-*.csv
 examples/out-*.txt
+
+examples/*.log
+examples/exp/*.log
+examples/exp/wyq_time.sh
+examples/exp/result/*
+examples/exp/wyq_result/*
+*.log
