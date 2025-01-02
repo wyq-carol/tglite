@@ -6,7 +6,7 @@ import tglite as tg
 
 import support
 from tgn import TGN
-
+import nvtx
 
 ### arguments
 
@@ -32,6 +32,7 @@ parser.add_argument('--opt-dedup', action='store_true', help='enable dedup optim
 parser.add_argument('--opt-time', action='store_true', help='enable precomputing time encodings')
 parser.add_argument('--time-window', type=str, default=1e4, help='time window to precompute (default: 1e4)')
 parser.add_argument('--opt-all', action='store_true', help='enable all available optimizations')
+parser.add_argument('--all-on-gpu', type=int, default=0, help='is node memory all-on-gpu')
 args = parser.parse_args()
 print(args)
 
@@ -57,11 +58,12 @@ SAMPLING: str = args.sampling
 OPT_DEDUP: bool = args.opt_dedup or args.opt_all
 OPT_TIME: bool = args.opt_time or args.opt_all
 TIME_WINDOW: int = int(args.time_window)
+ALL_ON_GPU: int = int(args.all_on_gpu)
 
 
 ### load data
 
-g = support.load_graph(os.path.join(DATA_PATH, f'data/{DATA}/edges.csv'))
+g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
 support.load_feats(g, DATA, DATA_PATH)
 dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
 dim_nfeat = g.nfeat.shape[1]
@@ -70,10 +72,13 @@ g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
 g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
 
 g.set_compute(device)
+z = None
 if args.move:
     g.move_data(device)
+    # z = torch.zeros(1).float().to(device)
 
 ctx = tg.TContext(g)
+ctx.set_z(z)
 ctx.need_sampling(True)
 ctx.enable_time_precompute(OPT_TIME)
 ctx.set_time_window(TIME_WINDOW)
@@ -105,5 +110,7 @@ trainer = support.LinkPredTrainer(
     EPOCHS, BATCH_SIZE, train_end, val_end,
     model_path, model_mem_path)
 
-trainer.train()
-trainer.test()
+with nvtx.annotate("TRAIN", color="green"):
+    trainer.train()
+with nvtx.annotate("TEST", color="green"):
+    trainer.test()

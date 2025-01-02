@@ -6,6 +6,7 @@ from torch.utils.cpp_extension import BuildExtension, CppExtension
 def main():
     curr_dir = Path(__file__).absolute().parent
     setup(
+        name="tglite",
         ext_modules=[
             CppExtension(
                 name="tglite._c",

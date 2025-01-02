@@ -9,6 +9,7 @@ from ._core import TError
 from ._block import TBlock
 from ._context import TContext
 from ._stats import tt
+import nvtx
 
 
 # def find_last_message(uniq_nodes: np.ndarray, sorted_edges: np.ndarray):
@@ -41,9 +42,11 @@ def edge_softmax(blk: TBlock, data: Tensor) -> Tensor:
     blk._check_has_nbrs()
     size = blk._edata.dim()
     assert data.shape[0] == size
+    # 在这等我！
     reindex = torch.from_numpy(blk._dstindex)
-    reindex = torch.unique(reindex, return_inverse=True)[1]
     reindex = reindex.to(device=data.device, dtype=torch.long)
+    reindex = torch.unique(reindex, return_inverse=True)[1]
+    # reindex = reindex.to(device=data.device, dtype=torch.long)
     return torch_scatter.scatter_softmax(data, reindex, dim=0, dim_size=size)
 
 
@@ -190,30 +193,9 @@ def dedup(blk: TBlock) -> TBlock:
     '''
     if blk.num_dst() == 0:
         return blk
-    # import pdb; pdb.set_trace()
     nodes = blk._dstnodes
     times = blk._dsttimes
-    print(f"dstnodes.size={nodes.size}, times.size={times.size}")
-    if blk._srcnodes is not None:
-        print(f"srcnodes.size={blk._srcnodes.size}")
-    if blk.eid is not None:
-        print(f"eid.size={blk.eid.size}")
     has_dups, nodes, times, inv_idx = _c.dedup_targets(nodes, times)
-
-    def check_duplicates(lst, num):
-        # 分成三部分
-        first_part = lst[:int(num/3)]
-        middle_part = lst[int(num/3):int(num/3*2)]
-        last_part = lst[int(num/3*2):]
-        # 检查每一部分是否有重复项
-        first_part_has_duplicates = len(first_part) != len(set(first_part))
-        middle_part_has_duplicates = len(middle_part) != len(set(middle_part))
-        last_part_has_duplicates = len(last_part) != len(set(last_part))
-        return first_part_has_duplicates, middle_part_has_duplicates, last_part_has_duplicates
-    
-    print(f"after-dup dstnodes.size={nodes.size}, times.size={times.size}")
-    first, second, third = check_duplicates(inv_idx, len(nodes))
-    print([first, second, third])
     if has_dups:
         blk._replace_dst(nodes, times)
         blk.register_hook(_DedupInvertHook(inv_idx))
@@ -332,6 +314,7 @@ class _CachePartialHitsHook(object):
 
 
 def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Tensor:
+
     '''
     Generates a tensor of precomputed zero values encoded by the specified encoder, 
     used for creating a batch of zero time encodings.
@@ -342,22 +325,27 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
     :param num:
     :return: precomputed zero-initialized tensor of the given size
     '''
-    cdev = ctx._g.compute_device()
-    if ctx._training or not ctx._time_enabled:
-        if getattr(encoder, '__tg_builtin_encoder__', False):
-            return encoder.zeros(num, cdev)
-        else:
-            return encoder(torch.zeros(num, dtype=torch.float, device=cdev))
+    with nvtx.annotate("precompute_zeros", color="red"):
+        cdev = ctx._g.compute_device()
+        if ctx._training or not ctx._time_enabled:
+            if ctx._z is not None:
+                return encoder.preload_zeros(ctx._z.expand(num))
+            else: 
+                # 写kernel 不要真的生成torch.zeros
+                if getattr(encoder, '__tg_builtin_encoder__', False):
+                    return encoder.zeros(num, cdev)
+                else:
+                    return encoder(torch.zeros(num, dtype=torch.float, device=cdev))
 
-    time_table = ctx._time_tables.get(id)
-    if time_table is None:
-        time_table = encoder(torch.arange(
-            ctx._time_window + 1, dtype=torch.float, device=cdev))
-        ctx._time_tables[id] = time_table
+        time_table = ctx._time_tables.get(id)
+        if time_table is None:
+            time_table = encoder(torch.arange(
+                ctx._time_window + 1, dtype=torch.float, device=cdev))
+            ctx._time_tables[id] = time_table
 
-    output = time_table[0].repeat(num, 1)
-    output = output.view(num, -1)
-    return output
+        output = time_table[0].repeat(num, 1)
+        output = output.view(num, -1)
+        return output
 
 
 def precomputed_times(ctx: TContext, id: int, encoder: Callable, times: Tensor) -> Tensor:
@@ -371,25 +359,26 @@ def precomputed_times(ctx: TContext, id: int, encoder: Callable, times: Tensor) 
     :param times:
     :return: a precomputed tensor of the given times
     '''
-    if ctx._training or not ctx._time_enabled:
-        return encoder(times)
+    with nvtx.annotate("precompute_times", color="red"):
+        if ctx._training or not ctx._time_enabled:
+            return encoder(times)
+    
+        time_table = ctx._time_tables.get(id)
+        if time_table is None:
+            time_table = encoder(torch.arange(
+                ctx._time_window + 1, dtype=torch.float, device=ctx._g.compute_device()))
+            ctx._time_tables[id] = time_table
 
-    time_table = ctx._time_tables.get(id)
-    if time_table is None:
-        time_table = encoder(torch.arange(
-            ctx._time_window + 1, dtype=torch.float, device=ctx._g.compute_device()))
-        ctx._time_tables[id] = time_table
+        size = times.shape[0]
+        hit_count, hit_idx, output, times, inv_idx = \
+            _c.find_dedup_time_hits(times, time_table, ctx._time_window)
+        uniq_size = times.shape[0]
 
-    size = times.shape[0]
-    hit_count, hit_idx, output, times, inv_idx = \
-        _c.find_dedup_time_hits(times, time_table, ctx._time_window)
-    uniq_size = times.shape[0]
+        if hit_count != uniq_size:
+            miss_idx = (~ hit_idx)
+            times = times[miss_idx]
+            output[miss_idx] = encoder(times.squeeze())
 
-    if hit_count != uniq_size:
-        miss_idx = (~ hit_idx)
-        times = times[miss_idx]
-        output[miss_idx] = encoder(times.squeeze())
-
-    output = output[inv_idx]
-    output = output.view(size, -1)
-    return output
+        output = output[inv_idx]
+        output = output.view(size, -1)
+        return output

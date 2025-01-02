@@ -17,6 +17,8 @@ class TContext(object):
 
         :param TGraph g: The TGraph to operate on.
         """
+        self._z = None
+
         self._g = g
         self._training = True
 
@@ -108,6 +110,9 @@ class TContext(object):
             raise TError('time window must be non-negative')
         self._time_window = window
         self._time_tables.clear()
+
+    def set_z(self, z):
+        self._z = z
 
     def _get_efeat_pin(self, layer: int, rows: int, dim: int) -> Tensor:
         return self._get_pin(self._efeat_pins, layer, rows, [dim])

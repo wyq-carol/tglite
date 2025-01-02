@@ -8,6 +8,8 @@ from tglite._stats import tt
 import sys, os
 sys.path.append(os.path.join(os.getcwd(), '..')) 
 import support
+import time
+import nvtx
 
 
 class TGN(nn.Module):
@@ -36,76 +38,102 @@ class TGN(nn.Module):
         self.dedup = dedup
 
     def forward(self, batch: tg.TBatch) -> Tensor:
-        # setup message passing
-        head = batch.block(self.ctx)
-        for i in range(self.num_layers):
-            tail = head if i == 0 \
-                else tail.next_block(include_dst=True, use_dst_times=False)
-            tail = tg.op.dedup(tail) if self.dedup else tail
-            tail = self.sampler.sample(tail)
+        with nvtx.annotate("forward", color="purple"):
+            # setup message passing
+            with nvtx.annotate("dedup and cache", color="purple"):
+                head = batch.block(self.ctx)
+                for i in range(self.num_layers):
+                    tail = head if i == 0 \
+                        else tail.next_block(include_dst=True, use_dst_times=False)
+                    tail = tg.op.dedup(tail) if self.dedup else tail
+                    with nvtx.annotate("sample", color="purple"):
+                        tail = self.sampler.sample(tail)
 
-        # load data / feats
-        tg.op.preload(head, use_pin=True)
-        if tail.num_dst() > 0:
+            # load data / feats
+            with nvtx.annotate("preload data/feat", color="purple"):
+                tg.op.preload(head, use_pin=True)
+            if tail.num_dst() > 0:
+                # t_start = tt.start()
+                # import pdb;pdb.set_trace()
+                with nvtx.annotate("update mem", color="purple"):
+                    mem = self.update_memory(tail)
+                # tt.t_update_memory += tt.elapsed(t_start)
+                nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
+                tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+                tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                # tt.t_mem_update += tt.elapsed(t_start)
+                del nfeat
+                del mem
+
+            # compute embeddings
+            with nvtx.annotate("op aggr", color="purple"):
+                embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
+            del head
+            del tail
+
+            # compute scores
+            with nvtx.annotate("compute score", color="purple"):
+                src, dst, neg = batch.split_data(embeds)
+                scores = self.edge_predictor(src, dst)
+                if neg is not None:
+                    scores = (scores, self.edge_predictor(src, neg))
+            del embeds
+            del src
+            del dst
+            del neg
+
+            # memory messages
             t_start = tt.start()
-            mem = self.update_memory(tail)
-            nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
-            tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
-            tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
-            tt.t_mem_update += tt.elapsed(t_start)
-            del nfeat
-            del mem
+            with nvtx.annotate("save raw msgs", color="purple"):
+                self.save_raw_msgs(batch)
+            tt.t_post_update += tt.elapsed(t_start)
 
-        # compute embeddings
-        embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
-        del head
-        del tail
-
-        # compute scores
-        src, dst, neg = batch.split_data(embeds)
-        scores = self.edge_predictor(src, dst)
-        if neg is not None:
-            scores = (scores, self.edge_predictor(src, neg))
-        del embeds
-        del src
-        del dst
-        del neg
-
-        # memory messages
-        t_start = tt.start()
-        self.save_raw_msgs(batch)
-        tt.t_post_update += tt.elapsed(t_start)
-
-        return scores
+            return scores
 
     def update_memory(self, blk: tg.TBlock) -> Tensor:
         cdev = blk.g.compute_device()
+        # import pdb;pdb.set_trace()
         nodes = blk.allnodes()
 
+        # index, reverse = torch.unique(nodes, return_inverse=True)
+        # mail_ts = blk.g.mailbox.time[index][reverse]
+        time_start_0 = tt.start()
         mail_ts = blk.g.mailbox.time[nodes]
+        # index, reverse = torch.unique(nodes, return_inverse=True)
+        # mail_ts = blk.g.mailbox.time[index][reverse]
+        tt.tt_mail_ts_load += tt.elapsed(time_start_0)
+
         delta = mail_ts - blk.g.mem.time[nodes]
         delta = delta.squeeze().to(cdev)
         mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta)
         mail = torch.cat([blk.mail(), mail], dim=1)
 
         mem = blk.mem_data()
+        time_start_1 = tt.start()
         mem = self.mem_cell(mail, mem)
+        tt.t_mem_update_gru_cell += tt.elapsed(time_start_1)
+        time_start_2 = tt.start()
         blk.g.mem.update(nodes, mem, mail_ts)
+        tt.t_mem_update_after += tt.elapsed(time_start_2)
         return mem
 
     def save_raw_msgs(self, batch: tg.TBatch):
         sdev = batch.g.storage_device()
         mem = batch.g.mem.data
 
-        blk = batch.block_adj(self.ctx)
-        blk = tg.op.coalesce(blk, by='latest')
+        with nvtx.annotate("save raw msgs-block_adj", color="red"):
+            blk = batch.block_adj(self.ctx)
+        with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
+            blk = tg.op.coalesce(blk, by='latest')
 
-        uniq = torch.from_numpy(blk.dstnodes).long().to(sdev)
-        nbrs = torch.from_numpy(blk.srcnodes).long().to(sdev)
-        if self.dim_edge > 0:
-            eids = torch.from_numpy(blk.eid).long().to(sdev)
-            mail = torch.cat([mem[uniq], mem[nbrs], batch.g.efeat[eids]], dim=1)
-        else:
-            mail = torch.cat([mem[uniq], mem[nbrs]], dim=1)
-        mail_ts = torch.from_numpy(blk.ets).to(sdev)
-        batch.g.mailbox.store(uniq, mail, mail_ts)
+        with nvtx.annotate("save raw msgs-uniq nbrs", color="red"):
+            uniq = torch.from_numpy(blk.dstnodes).long().to(sdev)
+            nbrs = torch.from_numpy(blk.srcnodes).long().to(sdev)
+            if self.dim_edge > 0:
+                eids = torch.from_numpy(blk.eid).long().to(sdev)
+                mail = torch.cat([mem[uniq], mem[nbrs], batch.g.efeat[eids]], dim=1)
+            else:
+                mail = torch.cat([mem[uniq], mem[nbrs]], dim=1)
+            mail_ts = torch.from_numpy(blk.ets).to(sdev)
+        with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
+            batch.g.mailbox.store(uniq, mail, mail_ts)

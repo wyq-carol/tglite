@@ -72,6 +72,7 @@ class Memory(object):
     def update(self, nids: Union[np.ndarray, Tensor], newdata: Tensor, newtime: Tensor):
         if not isinstance(nids, Tensor):
             nids = torch.from_numpy(nids).long()
+        # print(self._device)
         nids = nids.to(self._device)
         self._data[nids] = newdata.detach().to(self._device)
         self._time[nids] = newtime.detach().to(self._device)

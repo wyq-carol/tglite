@@ -11,6 +11,7 @@ from typing import Callable, Optional, Tuple, Union
 
 import tglite as tg
 from tglite._stats import tt
+import nvtx
 
 
 def set_seed(seed: int):
@@ -152,39 +153,29 @@ class LinkPredTrainer(object):
             epoch_loss = 0.0
             t_loop = tt.start()
             for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
-
                 t_start = tt.start()
                 batch.neg_nodes = self.neg_sampler(len(batch))
-                time = tt.elapsed(t_start)
-                tt.t_prep_batch += time
-                tt.t_prep_batch_list.append(time)
+                tt.t_prep_batch += tt.elapsed(t_start)
 
                 t_start = tt.start()
                 self.optimizer.zero_grad()
                 pred_pos, pred_neg = self.model(batch)
-                time = tt.elapsed(t_start)
-                tt.t_forward += time
-                tt.t_forward_list.append(time)
+                tt.t_forward += tt.elapsed(t_start)
 
                 t_start = tt.start()
                 loss = self.criterion(pred_pos, torch.ones_like(pred_pos))
                 loss += self.criterion(pred_neg, torch.zeros_like(pred_neg))
                 epoch_loss += float(loss)
-                loss.backward()
-                self.optimizer.step()
-                time = tt.elapsed(t_start)
-                tt.t_backward += time
-                tt.t_backward_list.append(time)
-                tt.print_batch()
-                tt.reset_batch()
-                
-            # print("for each batch:")
-
+                with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
+                    loss.backward()
+                    self.optimizer.step()
+                    tt.t_backward += tt.elapsed(t_start)
             tt.t_loop = tt.elapsed(t_loop)
 
-            t_eval = tt.start()
-            ap, auc = self.eval(start_idx=self.train_end, end_idx=self.val_end)
-            tt.t_eval = tt.elapsed(t_eval)
+            with nvtx.annotate("TRAIN-eval", color="green"):
+                t_eval = tt.start()
+                ap, auc = self.eval(start_idx=self.train_end, end_idx=self.val_end)
+                tt.t_eval = tt.elapsed(t_eval)
 
             torch.cuda.synchronize()
             tt.t_epoch = tt.elapsed(t_epoch)

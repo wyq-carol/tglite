@@ -10,7 +10,19 @@ from torch import Tensor
 
 from ._stats import tt
 from .op import precomputed_zeros, precomputed_times, edge_reduce, edge_view, edge_softmax
+import nvtx
 
+def is_tensor_all_zeros(tensor):
+    """
+    判断一个Tensor是否全为0。
+
+    参数:
+    tensor (torch.Tensor): 需要判断的Tensor。
+
+    返回:
+    bool: 如果Tensor全为0，返回True；否则返回False。
+    """
+    return torch.all(tensor == 0).item()
 
 class TimeEncode(torch.nn.Module):
 
@@ -33,6 +45,9 @@ class TimeEncode(torch.nn.Module):
         self.w.bias = torch.nn.Parameter(torch.zeros(dim_time).float())
         self._z = torch.zeros(1).float()
 
+    def preload_zeros(self, view):
+        return self(view)
+
     def zeros(self, size: int, device):
         '''
         Generates a tensor of zeros with the encoded time dimensionality.
@@ -40,6 +55,7 @@ class TimeEncode(torch.nn.Module):
         :param size:
         :param device:
         '''
+        # 在这等着我呢！
         if self._z.device != torch.device(device):
             self._z = self._z.to(device)
         # expand does not allocate memory
@@ -52,7 +68,10 @@ class TimeEncode(torch.nn.Module):
         
         :param ts: input time stamps
         '''
-        return torch.cos(self.w(ts.unsqueeze(-1)))
+        # here
+        with nvtx.annotate("time-encode", color="red"):
+            ans = torch.cos(self.w(ts.unsqueeze(-1)))
+            return ans
 
 
 class TemporalAttnLayer(torch.nn.Module):
@@ -102,46 +121,61 @@ class TemporalAttnLayer(torch.nn.Module):
             out = torch.zeros(blk.num_dst(), self.dim_out, dtype=torch.float32, device=dev)
             out = torch.cat([out, blk.dstdata['h']], dim=1)
         else:
-            # import pdb;pdb.set_trace()
-            t_start = tt.start()
-            zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
-            tt.t_time_zero += tt.elapsed(t_start)
-            t_start = tt.start()
-            nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
-            tt.t_time_nbrs += tt.elapsed(t_start)
-            t_start = tt.start()
+            with nvtx.annotate("precompute", color="blue"):
+                t_start = tt.start()
+                zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
+                tt.t_time_zero += tt.elapsed(t_start)
+                t_start = tt.start()
+                nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
+                tt.t_time_nbrs += tt.elapsed(t_start)
+                t_start = tt.start()
+            
+            with nvtx.annotate("redundancy-mul", color="red"):
+                Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
+                if self.dim_edge > 0:
+                    Z = torch.cat([blk.srcdata['h'], blk.efeat(), nbrs_time_feat], dim=1)
+                else:
+                    Z = torch.cat([blk.srcdata['h'], nbrs_time_feat], dim=1)
+                del zero_time_feat
+                del nbrs_time_feat
 
-            Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
-            if self.dim_edge > 0:
-                Z = torch.cat([blk.srcdata['h'], blk.efeat(), nbrs_time_feat], dim=1)
-            else:
-                Z = torch.cat([blk.srcdata['h'], nbrs_time_feat], dim=1)
-            del zero_time_feat
-            del nbrs_time_feat
+                Q = self.w_q(Q)
+                Z = self.w_kv(Z)
+            
+            with nvtx.annotate("else", color="red"):
+                with nvtx.annotate("else-K", color="red"):
+                    K = Z[:, :self.dim_out]
+                with nvtx.annotate("else-V", color="red"):
+                    V = Z[:, self.dim_out:]
+                    del Z
+                    tt.t_sum += tt.elapsed(t_start)
+                    
+                    t_start = tt.start()
+                with nvtx.annotate("else-Q", color="red"):
+                    Q = edge_view(blk, Q)
+                with nvtx.annotate("else-reshape", color="red"):
+                    Q = torch.reshape(Q, (Q.shape[0], self.num_heads, -1))
+                    K = torch.reshape(K, (K.shape[0], self.num_heads, -1))
+                    V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
 
-            Q = self.w_q(Q)
-            Z = self.w_kv(Z)
-            K = Z[:, :self.dim_out]
-            V = Z[:, self.dim_out:]
-            del Z
+                with nvtx.annotate("else-attn", color="red"):
+                    attn = torch.sum(Q * K, dim=2)
+                    del Q
+                    del K
 
-            Q = edge_view(blk, Q)
-            Q = torch.reshape(Q, (Q.shape[0], self.num_heads, -1))
-            K = torch.reshape(K, (K.shape[0], self.num_heads, -1))
-            V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
+                with nvtx.annotate("else-leakyRelu", color="red"):
+                    attn = self.attn_act(attn)
+            with nvtx.annotate("edge-softmax", color="blue"):
+                with nvtx.annotate("edge-softmax", color="blue"):
+                    attn = edge_softmax(blk, attn)
+                with nvtx.annotate("dropout", color="blue"):
+                    attn = self.dropout(attn)
+                with nvtx.annotate("reshape", color="blue"):
+                    out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))
+                    del attn
 
-            attn = torch.sum(Q * K, dim=2)
-            del Q
-            del K
-
-            attn = self.attn_act(attn)
-            attn = edge_softmax(blk, attn)
-            attn = self.dropout(attn)
-
-            out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))
-            del attn
-
-            out = edge_reduce(blk, out, op='sum')
+            with nvtx.annotate("edge-reduce", color="blue"):
+                out = edge_reduce(blk, out, op='sum')
             out = torch.cat([out, blk.dstdata['h']], dim=1)
             tt.t_self_attn += tt.elapsed(t_start)
 
