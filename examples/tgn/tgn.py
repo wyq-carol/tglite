@@ -105,12 +105,14 @@ class TGN(nn.Module):
 
         delta = mail_ts - blk.g.mem.time[nodes]
         delta = delta.squeeze().to(cdev)
-        mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta)
+        with nvtx.annotate("update mem-precompute_times", color="purple"):
+            mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta)
         mail = torch.cat([blk.mail(), mail], dim=1)
 
         mem = blk.mem_data()
         time_start_1 = tt.start()
-        mem = self.mem_cell(mail, mem)
+        with nvtx.annotate("update mem-mem_cell", color="purple"):
+            mem = self.mem_cell(mail, mem)
         tt.t_mem_update_gru_cell += tt.elapsed(time_start_1)
         time_start_2 = tt.start()
         blk.g.mem.update(nodes, mem, mail_ts)

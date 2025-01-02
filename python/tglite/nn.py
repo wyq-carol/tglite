@@ -11,6 +11,7 @@ from torch import Tensor
 from ._stats import tt
 from .op import precomputed_zeros, precomputed_times, edge_reduce, edge_view, edge_softmax
 import nvtx
+from .mymodule import LinearHandleZeroInput
 
 def is_tensor_all_zeros(tensor):
     """
@@ -38,7 +39,8 @@ class TimeEncode(torch.nn.Module):
         :param dim_time: dimensionality of the encoded time
         '''
         super().__init__()
-        self.w = torch.nn.Linear(1, dim_time)
+        # self.w = torch.nn.Linear(1, dim_time)
+        self.w = LinearHandleZeroInput(1, dim_time)
         self.w.weight = torch.nn.Parameter(torch
             .from_numpy(1 / 10 ** np.linspace(0, 9, dim_time))
             .float().reshape(dim_time, 1))
@@ -60,9 +62,9 @@ class TimeEncode(torch.nn.Module):
             self._z = self._z.to(device)
         # expand does not allocate memory
         view = self._z.expand(size)
-        return self(view)
+        return self(False, view)
 
-    def forward(self, ts: Tensor) -> Tensor:
+    def forward(self, is_zero_tensor, ts: Tensor) -> Tensor:
         '''
         Forward pass of the TimeEncode module. Encodes the input time stamps into a high-dimensional space.
         
@@ -70,7 +72,9 @@ class TimeEncode(torch.nn.Module):
         '''
         # here
         with nvtx.annotate("time-encode", color="red"):
-            ans = torch.cos(self.w(ts.unsqueeze(-1)))
+            # wyq_refine
+            # ans = torch.cos(self.w(is_zero_tensor, ts.unsqueeze(-1)))
+            ans = torch.cos(self.w(is_zero_tensor, ts))
             return ans
 
 

@@ -126,6 +126,8 @@ class TGraph(object):
         if not isinstance(value, Mailbox):
             raise TError('invalid mailbox object')
         if value.device != self._storage_dev:
+            print(f"value.device {value.device}")
+            print(f"self._storage_dev {self._storage_dev}")
             raise TError('mailbox storage device mismatch')
         # ... more checks here ...
         self._mailbox = value
@@ -157,6 +159,10 @@ class TGraph(object):
     def set_compute(self, device):
         """Sets computing device"""
         self._compute_dev = torch.device(device)
+
+    def set_storage(self, device):
+        """Sets storage device"""
+        self._storage_dev = torch.device(device)
 
     def move_data(self, device, **kwargs):
         """Moves tensor data to device while keeping graph on CPU"""

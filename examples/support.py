@@ -163,9 +163,11 @@ class LinkPredTrainer(object):
                 tt.t_forward += tt.elapsed(t_start)
 
                 t_start = tt.start()
-                loss = self.criterion(pred_pos, torch.ones_like(pred_pos))
-                loss += self.criterion(pred_neg, torch.zeros_like(pred_neg))
-                epoch_loss += float(loss)
+                with nvtx.annotate("TRAIN-cal_loss", color="green"):
+                    targets = torch.cat([torch.ones_like(pred_pos), torch.zeros_like(pred_neg)], dim=0)
+                    preds = torch.cat([pred_pos, pred_neg], dim=0)
+                    loss = self.criterion(preds, targets)
+                    epoch_loss += float(loss)
                 with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
                     loss.backward()
                     self.optimizer.step()

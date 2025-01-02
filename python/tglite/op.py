@@ -118,12 +118,16 @@ def preload(blk: TBlock, use_pin=True):
     while curr is not None:
         if curr.num_dst() > 0:
             if curr.next is None:
-                curr._load_mail(use_pin=use_pin)
-                curr._load_mem_data(use_pin=use_pin)
+                with nvtx.annotate("preload mail", color="red"):
+                    curr._load_mail(use_pin=use_pin)
+                with nvtx.annotate("preload mem_data", color="red"):
+                    curr._load_mem_data(use_pin=use_pin)
             if curr.has_nbrs():
                 if curr.next is None:
-                    curr._load_nfeat(use_pin=use_pin)
-                curr._load_efeat(use_pin=use_pin)
+                    with nvtx.annotate("preload nfeat", color="red"):
+                        curr._load_nfeat(use_pin=use_pin)
+                with nvtx.annotate("preload efeat", color="red"):
+                    curr._load_efeat(use_pin=use_pin)
         curr = curr.prev
 
 
@@ -328,6 +332,9 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
     with nvtx.annotate("precompute_zeros", color="red"):
         cdev = ctx._g.compute_device()
         if ctx._training or not ctx._time_enabled:
+            # return encoder(True, None)
+            return encoder(True, num)
+            
             if ctx._z is not None:
                 return encoder.preload_zeros(ctx._z.expand(num))
             else: 
@@ -335,7 +342,7 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
                 if getattr(encoder, '__tg_builtin_encoder__', False):
                     return encoder.zeros(num, cdev)
                 else:
-                    return encoder(torch.zeros(num, dtype=torch.float, device=cdev))
+                    return encoder(False, torch.zeros(num, dtype=torch.float, device=cdev))
 
         time_table = ctx._time_tables.get(id)
         if time_table is None:
@@ -361,7 +368,7 @@ def precomputed_times(ctx: TContext, id: int, encoder: Callable, times: Tensor) 
     '''
     with nvtx.annotate("precompute_times", color="red"):
         if ctx._training or not ctx._time_enabled:
-            return encoder(times)
+            return encoder(False, times)
     
         time_table = ctx._time_tables.get(id)
         if time_table is None:

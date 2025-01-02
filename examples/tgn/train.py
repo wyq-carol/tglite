@@ -68,10 +68,20 @@ support.load_feats(g, DATA, DATA_PATH)
 dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
 dim_nfeat = g.nfeat.shape[1]
 
+# if args.move:
+#     g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
+#     g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
+#     g.set_compute(device)
+#     g.set_storage(device)
+# else:
+#     g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
+#     g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
+#     g.set_compute(device)
+
 g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
 g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
-
 g.set_compute(device)
+
 z = None
 if args.move:
     g.move_data(device)
@@ -96,7 +106,8 @@ model = TGN(ctx,
     num_heads=N_HEADS,
     dropout=DROPOUT)
 model = model.to(device)
-criterion = torch.nn.BCEWithLogitsLoss()
+# criterion = torch.nn.BCEWithLogitsLoss()
+criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARN_RATE)
 
 
