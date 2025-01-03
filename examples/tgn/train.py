@@ -32,7 +32,6 @@ parser.add_argument('--opt-dedup', action='store_true', help='enable dedup optim
 parser.add_argument('--opt-time', action='store_true', help='enable precomputing time encodings')
 parser.add_argument('--time-window', type=str, default=1e4, help='time window to precompute (default: 1e4)')
 parser.add_argument('--opt-all', action='store_true', help='enable all available optimizations')
-parser.add_argument('--all-on-gpu', type=int, default=0, help='is node memory all-on-gpu')
 args = parser.parse_args()
 print(args)
 
@@ -58,29 +57,28 @@ SAMPLING: str = args.sampling
 OPT_DEDUP: bool = args.opt_dedup or args.opt_all
 OPT_TIME: bool = args.opt_time or args.opt_all
 TIME_WINDOW: int = int(args.time_window)
-ALL_ON_GPU: int = int(args.all_on_gpu)
-
 
 ### load data
 
 g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
-support.load_feats(g, DATA, DATA_PATH)
-dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
-dim_nfeat = g.nfeat.shape[1]
 
-# if args.move:
-#     g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
-#     g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
-#     g.set_compute(device)
-#     g.set_storage(device)
-# else:
-#     g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
-#     g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
-#     g.set_compute(device)
+if args.move:
+    support.load_feats(g, device, DATA, DATA_PATH)
+    dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
+    dim_nfeat = g.nfeat.shape[1]
 
-g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
-g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
-g.set_compute(device)
+    g.set_compute(device)
+    g.set_storage(device)
+    g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
+    g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
+else:
+    support.load_feats(g, "cpu", DATA, DATA_PATH)
+    dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
+    dim_nfeat = g.nfeat.shape[1]
+
+    g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
+    g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
+    g.set_compute(device)
 
 z = None
 if args.move:

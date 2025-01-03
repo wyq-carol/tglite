@@ -379,7 +379,9 @@ class TBlock(object):
         sdev = self._g.storage_device()
         cdev = self._g.compute_device()
         idx = torch.from_numpy(idx).long()
-        if sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
+        if sdev.type == 'cuda' and cdev.type == 'cuda':
+            data = feat[idx]
+        elif sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
             pin = pin_getter(self.layer, len(idx), feat.shape[1])
             torch.index_select(feat, 0, idx, out=pin)
             data = pin.to(cdev, non_blocking=True)
@@ -395,7 +397,9 @@ class TBlock(object):
             sdev = self._g.storage_device()
             cdev = self._g.compute_device()
             nodes = self.allnodes()
-            if sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
+            if sdev.type == 'cuda' and cdev.type == 'cuda':
+                data = self._g.mem.data[nodes]
+            elif sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
                 pin = self._ctx._get_mem_data_pin(self.layer, len(nodes))
                 torch.index_select(self._g.mem.data, 0, nodes, out=pin)
                 data = pin.to(cdev, non_blocking=True)
@@ -411,6 +415,8 @@ class TBlock(object):
             sdev = self._g.storage_device()
             cdev = self._g.compute_device()
             nodes = self.allnodes()
+            if sdev.type == 'cuda' and cdev.type == 'cuda':
+                data = self._g.mailbox.mail[nodes]
             if sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
                 pin = self._ctx._get_mail_pin(self.layer, len(nodes))
                 torch.index_select(self._g.mailbox.mail, 0, nodes, out=pin)

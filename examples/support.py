@@ -63,7 +63,7 @@ def load_graph(path: Union[str, Path]) -> tg.TGraph:
     return g
 
 
-def load_feats(g: tg.TGraph, d: str, data_path: str=''):
+def load_feats(g: tg.TGraph, device, d: str, data_path: str=''):
     """
     Load edge features and node features to g from /home/volume/{d}/edge_features.pt and
     /home/volume/{d}/edge_features.pt. If no file, create random edge and node features for data 'mooc',
@@ -87,8 +87,8 @@ def load_feats(g: tg.TGraph, d: str, data_path: str=''):
 
     print('edge feat:', None if edge_feats is None else edge_feats.shape)
     print('node feat:', None if node_feats is None else node_feats.shape)
-    g.efeat = edge_feats
-    g.nfeat = node_feats
+    g.efeat = edge_feats.to(device)
+    g.nfeat = node_feats.to(device)
 
 
 def data_split(num_samples: int, train_percent: float, val_percent: float) -> Tuple[int, int]:
@@ -167,6 +167,13 @@ class LinkPredTrainer(object):
                     targets = torch.cat([torch.ones_like(pred_pos), torch.zeros_like(pred_neg)], dim=0)
                     preds = torch.cat([pred_pos, pred_neg], dim=0)
                     loss = self.criterion(preds, targets)
+                    # wyq_refine
+                    # loss0 = self.criterion(pred_pos, torch.ones_like(pred_pos))
+                    # loss1 = self.criterion(pred_neg, torch.zeros_like(pred_neg))
+                    # combined_batch_size = pred_pos.size(0) + pred_neg.size(0)
+                    # loss_separated = (loss0 * pred_pos.size(0) + loss1 * pred_neg.size(0)) / combined_batch_size
+                    # print(f"loss {loss}")
+                    # print(f"loss {loss_separated}, loss0 {loss0}, loss1 {loss1}")
                     epoch_loss += float(loss)
                 with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
                     loss.backward()
