@@ -61,17 +61,6 @@ class TBlock(object):
         self._srcdata = TFrame(0 if srcnodes is None else len(srcnodes))
         self._edata = TFrame(0 if eid is None else len(eid))
 
-        # gpu attributes
-        self._g_efeat = None
-        self._g_nfeat = None
-        if self._g.storage_device() != torch.device("cpu"):
-            self._g_allnodes = torch.from_numpy(self._dstnodes).long().to("cuda:0")
-        else: 
-            self._g_allnodes = None
-        self._g_uniq_src = None # todo
-        self._g_mem_data = None
-        self._g_mail = None
-
         # cached attributes
         self._c_efeat = None
         self._c_nfeat = None
@@ -79,6 +68,18 @@ class TBlock(object):
         self._c_uniq_src = None
         self._c_mem_data = None
         self._c_mail = None
+
+        # gpu attributes
+        self._g_efeat = None
+        self._g_nfeat = None
+        self._g_uniq_src = None # todo
+        self._g_mem_data = None
+        self._g_mail = None
+        if self._g.storage_device() != torch.device("cpu"):
+            self._g_allnodes = torch.from_numpy(self._dstnodes).long().to("cuda:0")
+        else: 
+            self._g_allnodes = None
+            self._g_eid = None
 
     @property
     def g(self) -> 'TGraph':
@@ -201,6 +202,7 @@ class TBlock(object):
         if self._g.storage_device() != torch.device("cpu"):
             # gpu_tracker.track()
             self._g_allnodes = torch.from_numpy(np.concatenate([self._dstnodes, self._srcnodes])).long().to("cuda:0")
+            self._g_eid = torch.from_numpy(self._eid).long().to("cuda:0")
             # gpu_tracker.track()
 
     def clear_nbrs(self):
@@ -258,7 +260,7 @@ class TBlock(object):
 
     def allnodes(self) -> Tensor:
         """Returns a tensor containing the destination nodes concatenated with the source nodes (if available) in pre-defined TGraph's storage device."""
-        if self._g_allnodes is not None:
+        if self._g.storage_device() != torch.device("cpu"):
             return self._g_allnodes
 
         if self._c_allnodes is None:
@@ -282,8 +284,11 @@ class TBlock(object):
 
     def efeat(self) -> Optional[Tensor]:
         """Returns the edge features in TGraph's computation device, always use pinned memory if possible."""
-        self._load_efeat(use_pin=True)
-        return self._c_efeat
+        if self._g.storage_device() != torch.device("cpu"):
+            return self._g_efeat
+        else:
+            self._load_efeat(use_pin=True)
+            return self._c_efeat
 
     def nfeat(self) -> Optional[Tensor]:
         """Returns the node features in TGraph's computation device, always use pinned memory if possible."""
@@ -307,9 +312,9 @@ class TBlock(object):
 
     def mail(self) -> Optional[Tensor]:
         """Returns the node mails in TGraph's computation device, always use pinned memory if possible."""
-        if self._g_mail is not None:
+        if self._g.storage_device() != torch.device("cpu"):
             return self._g_mail
-        if self._c_mail is not None:
+        else:
             self._load_mail(use_pin=True)
             return self._c_mail
 
@@ -377,10 +382,13 @@ class TBlock(object):
 
     def _load_efeat(self, use_pin=False):
         """Loads the edge features to the TGraph's computation device."""
-        if self._c_efeat is None and self._g.efeat is not None:
-            self._c_efeat = self._load_feat(
-                self._g.efeat, self._eid, use_pin,
-                self._ctx._get_efeat_pin)
+        if self._g.storage_device() != torch.device("cpu"):
+            self._g_efeat = self._g.efeat[self._g_eid]
+        else:
+            if self._c_efeat is None and self._g.efeat is not None:
+                self._c_efeat = self._load_feat(
+                    self._g.efeat, self._eid, use_pin,
+                    self._ctx._get_efeat_pin)
 
     def _load_nfeat(self, use_pin=False):
         """Loads the node features to the TGraph's computation device."""
@@ -439,9 +447,9 @@ class TBlock(object):
             sdev = self._g.storage_device()
             cdev = self._g.compute_device()
             if sdev.type == 'cuda' and cdev.type == 'cuda':
-                with nvtx.annotate("_block _load_mail nodes", color="green"):
+                with nvtx.annotate("_block _load_mail nodes", color="red"):
                     nodes = self.allnodes()
-                with nvtx.annotate("_block _load_mail data", color="green"):
+                with nvtx.annotate("_block _load_mail data", color="red"):
                     data = self._g.mailbox.mail[nodes]
                 tt.t_prep_input += tt.elapsed(t_start)
                 self._g_mail = data

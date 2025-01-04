@@ -38,6 +38,9 @@ class TGraph(object):
         self._storage_dev = torch.device('cpu')
         self._compute_dev = torch.device('cpu')
 
+        self._g_edata = None
+        self._g_ndata = None
+
     @property
     def get_device(self):
         print(self._edges.device)
