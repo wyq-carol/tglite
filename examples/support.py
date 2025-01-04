@@ -92,7 +92,7 @@ def load_feats(g: tg.TGraph, device, d: str, data_path: str=''):
 
     if device != torch.device("cpu"):
         g._g_efeat = edge_feats.to(device)
-        g._g_nfeat = edge_feats.to(device)
+        g._g_nfeat = node_feats.to(device)
 
 
 def data_split(num_samples: int, train_percent: float, val_percent: float) -> Tuple[int, int]:

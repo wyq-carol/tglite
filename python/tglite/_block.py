@@ -72,14 +72,15 @@ class TBlock(object):
         # gpu attributes
         self._g_efeat = None
         self._g_nfeat = None
-        self._g_uniq_src = None # todo
+        self._g_nfeat = None
         self._g_mem_data = None
         self._g_mail = None
+        self._g_uniq_src = None # todo
+        self._g_eid = None
         if self._g.storage_device() != torch.device("cpu"):
             self._g_allnodes = torch.from_numpy(self._dstnodes).long().to("cuda:0")
         else: 
             self._g_allnodes = None
-            self._g_eid = None
 
     @property
     def g(self) -> 'TGraph':
@@ -292,8 +293,11 @@ class TBlock(object):
 
     def nfeat(self) -> Optional[Tensor]:
         """Returns the node features in TGraph's computation device, always use pinned memory if possible."""
-        self._load_nfeat(use_pin=True)
-        return self._c_nfeat
+        if self._g.storage_device() != torch.device("cpu"):
+            return self._g_nfeat
+        else:
+            self._load_nfeat(use_pin=True)
+            return self._c_nfeat
 
     def srcfeat(self) -> Optional[Tensor]:
         """Returns the source node features in TGraph's computation device, always use pinned memory if possible."""
@@ -392,10 +396,13 @@ class TBlock(object):
 
     def _load_nfeat(self, use_pin=False):
         """Loads the node features to the TGraph's computation device."""
-        if self._c_nfeat is None and self._g.nfeat is not None:
-            self._c_nfeat = self._load_feat(
-                self._g.nfeat, self.allnodes().cpu().numpy(), use_pin,
-                self._ctx._get_nfeat_pin)
+        if self._g.storage_device() != torch.device("cpu"):
+            self._g_nfeat = self._g.nfeat[self.allnodes()]
+        else:
+            if self._c_nfeat is None and self._g.nfeat is not None:
+                self._c_nfeat = self._load_feat(
+                    self._g.nfeat, self.allnodes().cpu().numpy(), use_pin,
+                    self._ctx._get_nfeat_pin)
 
     def _load_feat(self, feat: Tensor, idx: np.ndarray, use_pin: bool, pin_getter: Callable) -> Tensor:
         """Loads selected feature data from the TGraph's storage device to computation device.
