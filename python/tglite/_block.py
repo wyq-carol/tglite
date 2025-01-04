@@ -72,15 +72,18 @@ class TBlock(object):
         # gpu attributes
         self._g_efeat = None
         self._g_nfeat = None
-        self._g_nfeat = None
         self._g_mem_data = None
         self._g_mail = None
         self._g_uniq_src = None # todo
         self._g_eid = None
+        self._g_ets = None
+        self._g_dstindex = None
         if self._g.storage_device() != torch.device("cpu"):
             self._g_allnodes = torch.from_numpy(self._dstnodes).long().to("cuda:0")
+            self._g_dsttimes = torch.from_numpy(dsttimes).long().to("cuda:0")
         else: 
             self._g_allnodes = None
+            self._g_dsttimes = None
 
     @property
     def g(self) -> 'TGraph':
@@ -202,8 +205,10 @@ class TBlock(object):
         # gpu_tracker = MemTracker()
         if self._g.storage_device() != torch.device("cpu"):
             # gpu_tracker.track()
-            self._g_allnodes = torch.from_numpy(np.concatenate([self._dstnodes, self._srcnodes])).long().to("cuda:0")
-            self._g_eid = torch.from_numpy(self._eid).long().to("cuda:0")
+            self._g_allnodes = torch.from_numpy(np.concatenate([self._dstnodes, srcnodes])).long().to("cuda:0")
+            self._g_dstindex = torch.from_numpy(dstindex).long().to("cuda:0")
+            self._g_eid = torch.from_numpy(eid).long().to("cuda:0")
+            self._g_ets = torch.from_numpy(ets).float().to("cuda:0")
             # gpu_tracker.track()
 
     def clear_nbrs(self):
@@ -301,11 +306,17 @@ class TBlock(object):
 
     def srcfeat(self) -> Optional[Tensor]:
         """Returns the source node features in TGraph's computation device, always use pinned memory if possible."""
+        if self._g.storage_device() != torch.device("cpu"):
+            with nvtx.annotate("_block srcfeat", color="green"):
+                return self._g_nfeat[self.num_dst():]
         self._load_nfeat(use_pin=True)
         return self._c_nfeat[self.num_dst():]
 
     def dstfeat(self) -> Optional[Tensor]:
         """Returns the destination node features in TGraph's computation device, always use pinned memory if possible."""
+        if self._g.storage_device() != torch.device("cpu"):
+            with nvtx.annotate("_block dstfeat", color="green"):
+                return self._g_nfeat[:self.num_dst()]
         self._load_nfeat(use_pin=True)
         return self._c_nfeat[:self.num_dst()]
 
@@ -328,11 +339,17 @@ class TBlock(object):
         
         :return: A tensor containing the time deltas.
         """
-        self._check_has_nbrs()
-        dts = self._dsttimes[self._dstindex]
-        dts = dts - self._ets
-        dev = self._g.compute_device()
-        return torch.from_numpy(dts).to(device=dev, dtype=torch.float)
+        if self._g.storage_device() != torch.device("cpu"):
+            return (self._g_dsttimes[self._g_dstindex] - self._g_ets)
+        with nvtx.annotate("time_deltas", color="green"):
+            with nvtx.annotate("time_deltas _check_has_nbrs", color="red"):
+                self._check_has_nbrs()
+            with nvtx.annotate("time_deltas dts", color="green"): # 1.cpu计算1ms+传输和gpu计算 tradeoff？ 2.mem.cell kernel低效和async的memcpy有关吗？
+                dts = self._dsttimes[self._dstindex]
+            dts = dts - self._ets
+            dev = self._g.compute_device()
+            with nvtx.annotate("time_deltas dts.to", color="green"):
+                return torch.from_numpy(dts).to(device=dev, dtype=torch.float)
 
     def apply(self, fn: Callable, need_nbrs=True, run_hooks=True):
         """
@@ -449,7 +466,7 @@ class TBlock(object):
 
     def _load_mail(self, use_pin=False):
         """Loads the mail to the TGraph's computation device"""
-        with nvtx.annotate("_block _load_mail", color="green"):
+        with nvtx.annotate("_block _load_mail", color="red"):
             t_start = tt.start()
             sdev = self._g.storage_device()
             cdev = self._g.compute_device()
