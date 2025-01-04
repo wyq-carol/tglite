@@ -11,7 +11,8 @@ from torch import Tensor
 from ._core import TError
 from ._frame import TFrame
 from ._stats import tt
-
+import nvtx
+from .gpu_mem_track import MemTracker
 
 class TBlock(object):
     """Captures 1-hop relations between node/time pairs and their neighbors for doing computations, such as segmented
@@ -59,6 +60,17 @@ class TBlock(object):
         self._dstdata = TFrame(len(dstnodes))
         self._srcdata = TFrame(0 if srcnodes is None else len(srcnodes))
         self._edata = TFrame(0 if eid is None else len(eid))
+
+        # gpu attributes
+        self._g_efeat = None
+        self._g_nfeat = None
+        if self._g.storage_device() != torch.device("cpu"):
+            self._g_allnodes = torch.from_numpy(self._dstnodes).long().to("cuda:0")
+        else: 
+            self._g_allnodes = None
+        self._g_uniq_src = None # todo
+        self._g_mem_data = None
+        self._g_mail = None
 
         # cached attributes
         self._c_efeat = None
@@ -185,6 +197,12 @@ class TBlock(object):
         self._edata = TFrame(len(eid))
         self._srcdata = TFrame(len(srcnodes))
 
+        # gpu_tracker = MemTracker()
+        if self._g.storage_device() != torch.device("cpu"):
+            # gpu_tracker.track()
+            self._g_allnodes = torch.from_numpy(np.concatenate([self._dstnodes, self._srcnodes])).long().to("cuda:0")
+            # gpu_tracker.track()
+
     def clear_nbrs(self):
         """Clears the neighbor attributes and related cache."""
         self._has_nbrs = False
@@ -240,6 +258,9 @@ class TBlock(object):
 
     def allnodes(self) -> Tensor:
         """Returns a tensor containing the destination nodes concatenated with the source nodes (if available) in pre-defined TGraph's storage device."""
+        if self._g_allnodes is not None:
+            return self._g_allnodes
+
         if self._c_allnodes is None:
             sdev = self._g.storage_device()
             nodes = np.concatenate([self._dstnodes, self._srcnodes]) \
@@ -286,8 +307,11 @@ class TBlock(object):
 
     def mail(self) -> Optional[Tensor]:
         """Returns the node mails in TGraph's computation device, always use pinned memory if possible."""
-        self._load_mail(use_pin=True)
-        return self._c_mail
+        if self._g_mail is not None:
+            return self._g_mail
+        if self._c_mail is not None:
+            self._load_mail(use_pin=True)
+            return self._c_mail
 
     def time_deltas(self) -> Tensor:
         """Computes the timestamp differences between destination nodes (used for sampling) and edges and returns
@@ -410,18 +434,29 @@ class TBlock(object):
 
     def _load_mail(self, use_pin=False):
         """Loads the mail to the TGraph's computation device"""
-        if self._c_mail is None and self._g.mailbox is not None:
+        with nvtx.annotate("_block _load_mail", color="green"):
             t_start = tt.start()
             sdev = self._g.storage_device()
             cdev = self._g.compute_device()
-            nodes = self.allnodes()
             if sdev.type == 'cuda' and cdev.type == 'cuda':
-                data = self._g.mailbox.mail[nodes]
-            if sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
-                pin = self._ctx._get_mail_pin(self.layer, len(nodes))
-                torch.index_select(self._g.mailbox.mail, 0, nodes, out=pin)
-                data = pin.to(cdev, non_blocking=True)
-            else:
-                data = self._g.mailbox.mail[nodes].to(cdev)
-            tt.t_prep_input += tt.elapsed(t_start)
-            self._c_mail = data
+                with nvtx.annotate("_block _load_mail nodes", color="green"):
+                    nodes = self.allnodes()
+                with nvtx.annotate("_block _load_mail data", color="green"):
+                    data = self._g.mailbox.mail[nodes]
+                tt.t_prep_input += tt.elapsed(t_start)
+                self._g_mail = data
+                return
+            
+            if self._c_mail is None and self._g.mailbox is not None:
+                t_start = tt.start()
+                sdev = self._g.storage_device()
+                cdev = self._g.compute_device()
+                nodes = self.allnodes()
+                if sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin:
+                    pin = self._ctx._get_mail_pin(self.layer, len(nodes))
+                    torch.index_select(self._g.mailbox.mail, 0, nodes, out=pin)
+                    data = pin.to(cdev, non_blocking=True)
+                else:
+                    data = self._g.mailbox.mail[nodes].to(cdev)
+                tt.t_prep_input += tt.elapsed(t_start)
+                self._c_mail = data
