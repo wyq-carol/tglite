@@ -27,6 +27,9 @@ def edge_view(blk: TBlock, data: Tensor) -> Tensor:
     '''
     blk._check_has_nbrs()
     assert data.shape[0] == blk._dstdata.dim()
+    if blk._g.storage_device() != torch.device("cpu"):
+        return data[blk._g_dstindex]
+
     idx = torch.from_numpy(blk._dstindex)
     idx = idx.to(device=data.device, dtype=torch.long)
     return data[idx]
@@ -42,6 +45,10 @@ def edge_softmax(blk: TBlock, data: Tensor) -> Tensor:
     blk._check_has_nbrs()
     size = blk._edata.dim()
     assert data.shape[0] == size
+    if blk._g.storage_device() != torch.device("cpu"):
+        reindex = torch.unique(blk._g_dstindex, return_inverse=True)[1]
+        return torch_scatter.scatter_softmax(data, reindex, dim=0, dim_size=size)
+
     # 在这等我！
     reindex = torch.from_numpy(blk._dstindex)
     reindex = reindex.to(device=data.device, dtype=torch.long)
@@ -62,6 +69,9 @@ def edge_reduce(blk: TBlock, data: Tensor, op='sum') -> Tensor:
     assert op in ['sum', 'mean'], "currently only supports sum or mean"
     assert data.shape[0] == blk._edata.dim()
     size = blk._dstdata.dim()
+    if blk._g.storage_device() != torch.device("cpu"):
+        return torch_scatter.segment_coo(data, blk._g_dstindex, dim_size=size, reduce=op)
+
     scatter_idx = torch.from_numpy(blk._dstindex)
     scatter_idx = scatter_idx.to(device=data.device, dtype=torch.long)
     return torch_scatter.segment_coo(data, scatter_idx, dim_size=size, reduce=op)
@@ -155,8 +165,9 @@ def aggregate(blk: TBlock, fn_or_list: Union[Callable, List[Callable]], key: str
         if blk.prev is not None and output is not None and key:
             if blk._include_prev_dst:
                 num_dst = blk.prev.num_dst()
-                blk.prev.dstdata[key] = output[:num_dst]
-                blk.prev.srcdata[key] = output[num_dst:]
+                with nvtx.annotate("aggregate blk.prev.dstdata/srcdata", color="green"):
+                    blk.prev.dstdata[key] = output[:num_dst]
+                    blk.prev.srcdata[key] = output[num_dst:]
             else:
                 blk.prev.srcdata[key] = output
         blk.clear_data()

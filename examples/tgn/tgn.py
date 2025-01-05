@@ -112,6 +112,7 @@ class TGN(nn.Module):
         mem = blk.mem_data()
         time_start_1 = tt.start()
         with nvtx.annotate("update mem-mem_cell", color="purple"):
+            # import pdb;pdb.set_trace()
             mem = self.mem_cell(mail, mem)
         tt.t_mem_update_gru_cell += tt.elapsed(time_start_1)
         time_start_2 = tt.start()

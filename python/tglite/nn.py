@@ -156,7 +156,7 @@ class TemporalAttnLayer(torch.nn.Module):
                     
                     t_start = tt.start()
                 with nvtx.annotate("else-Q", color="red"):
-                    Q = edge_view(blk, Q)
+                    Q = edge_view(blk, Q) # 对Q进行scatter
                 with nvtx.annotate("else-reshape", color="red"):
                     Q = torch.reshape(Q, (Q.shape[0], self.num_heads, -1))
                     K = torch.reshape(K, (K.shape[0], self.num_heads, -1))
