@@ -159,11 +159,13 @@ class TemporalAttnLayer(torch.nn.Module):
                     Q = edge_view(blk, Q) # 对Q进行scatter
                 with nvtx.annotate("else-reshape", color="red"):
                     Q = torch.reshape(Q, (Q.shape[0], self.num_heads, -1))
+                    # print(Q.shape)
                     K = torch.reshape(K, (K.shape[0], self.num_heads, -1))
                     V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
 
                 with nvtx.annotate("else-attn", color="red"):
                     attn = torch.sum(Q * K, dim=2)
+                    # print(attn.shape)
                     del Q
                     del K
 
@@ -183,8 +185,9 @@ class TemporalAttnLayer(torch.nn.Module):
             out = torch.cat([out, blk.dstdata['h']], dim=1)
             tt.t_self_attn += tt.elapsed(t_start)
 
-        out = self.w_out(out)
-        out = torch.nn.functional.relu(self.dropout(out))
-        out = self.layer_norm(out)
+        with nvtx.annotate("output", color="blue"):
+            out = self.w_out(out)
+            out = torch.nn.functional.relu(self.dropout(out))
+            out = self.layer_norm(out)
         return out
     

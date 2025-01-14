@@ -151,30 +151,37 @@ def aggregate(blk: TBlock, fn_or_list: Union[Callable, List[Callable]], key: str
     :param fn_or_list:
     :param key:
     '''
-    while blk.next is not None:
-        blk = blk.next
-    output = None
-    while blk is not None:
-        if blk.num_dst() == 0:
-            output = blk.run_hooks(output)
-        elif isinstance(fn_or_list, List):
-            output = blk.apply(fn_or_list[blk.layer])
-        else:
-            output = blk.apply(fn_or_list)
-        t_start = tt.start()
-        if blk.prev is not None and output is not None and key:
-            if blk._include_prev_dst:
-                num_dst = blk.prev.num_dst()
-                with nvtx.annotate("aggregate blk.prev.dstdata/srcdata", color="green"):
-                    blk.prev.dstdata[key] = output[:num_dst]
-                    blk.prev.srcdata[key] = output[num_dst:]
+    with nvtx.annotate("op.aggregate", color="green"):
+        while blk.next is not None:
+            blk = blk.next
+        output = None
+        while blk is not None:
+            if blk.num_dst() == 0:
+                with nvtx.annotate("op.aggregate run_hooks", color="green"):
+                    output = blk.run_hooks(output)
+            elif isinstance(fn_or_list, List):
+                with nvtx.annotate("op.aggregate apply", color="green"):
+                    output = blk.apply(fn_or_list[blk.layer])
             else:
-                blk.prev.srcdata[key] = output
-        blk.clear_data()
-        blk.clear_hooks()
-        tt.t_prep_input += tt.elapsed(t_start)
-        blk = blk.prev
-    return output
+                with nvtx.annotate("op.aggregate apply2", color="green"):
+                    output = blk.apply(fn_or_list)
+            t_start = tt.start()
+            if blk.prev is not None and output is not None and key:
+                if blk._include_prev_dst:
+                    num_dst = blk.prev.num_dst()
+                    with nvtx.annotate("aggregate blk.prev.dstdata/srcdata", color="red"):
+                        blk.prev.dstdata[key] = output[:num_dst]
+                        blk.prev.srcdata[key] = output[num_dst:]
+                else:
+                    with nvtx.annotate("op.aggregate blk.prev.dstdata", color="green"):
+                        blk.prev.srcdata[key] = output
+            with nvtx.annotate("op.aggregate clear_data", color="red"):
+                blk.clear_data()
+            with nvtx.annotate("op.aggregate clear_hooks", color="red"):
+                blk.clear_hooks()
+            tt.t_prep_input += tt.elapsed(t_start)
+            blk = blk.prev
+        return output
 
 
 def propagate(blk: TBlock, fn_or_list: Union[Callable, List[Callable]]) -> Any:
@@ -213,7 +220,9 @@ def dedup(blk: TBlock) -> TBlock:
     has_dups, nodes, times, inv_idx = _c.dedup_targets(nodes, times)
     if has_dups:
         blk._replace_dst(nodes, times)
-        blk.register_hook(_DedupInvertHook(inv_idx))
+        # print("register-hook _DedupInvertHook")
+        with nvtx.annotate("register-hook _DedupInvertHook", color="red"):
+            blk.register_hook(_DedupInvertHook(inv_idx))
     return blk
 
 
@@ -235,6 +244,9 @@ def cache(ctx: TContext, id: int, blk: TBlock, include_first=False):
     :param blk:
     :param include_first:
     '''
+    # if ctx.graph.storage_device() != torch.device("cpu"):
+    #     return blk
+    # TGN 只有dedup 没有cache！
     if ctx._training or not ctx._cache_enabled:
         return blk
     if blk.prev is None and not include_first:
@@ -256,19 +268,25 @@ def cache(ctx: TContext, id: int, blk: TBlock, include_first=False):
     hit_count = torch.sum(hit_idx).item()
 
     if hit_count == len(nodes):
-        blk._replace_dst_empty()
-        blk.register_hook(_CacheAllHitsHook(embeds))
+        print("register-hook _CacheAllHitsHook")
+        with nvtx.annotate("register-hook _CacheAllHitsHook", color="red"):
+            blk._replace_dst_empty()
+            blk.register_hook(_CacheAllHitsHook(embeds))
     elif hit_count == 0:
         # no need to adjust dst nodes
-        blk.register_hook(_CacheAllMissHook(cache_table, keys))
+        print("register-hook _CacheAllMissHook")
+        with nvtx.annotate("register-hook _CacheAllMissHook", color="red"):
+            blk.register_hook(_CacheAllMissHook(cache_table, keys))
     else:
-        miss_idx = (~ hit_idx)
-        miss_idx_np = miss_idx.cpu().numpy()
-        nodes = nodes[miss_idx_np]
-        times = times[miss_idx_np]
-        keys = keys[miss_idx_np]
-        blk._replace_dst(nodes, times)
-        blk.register_hook(_CachePartialHitsHook(cache_table, embeds, miss_idx, keys))
+        print("register-hook _CachePartialHitsHook")
+        with nvtx.annotate("register-hook _CachePartialHitsHook", color="red"):
+            miss_idx = (~ hit_idx)
+            miss_idx_np = miss_idx.cpu().numpy()
+            nodes = nodes[miss_idx_np]
+            times = times[miss_idx_np]
+            keys = keys[miss_idx_np]
+            blk._replace_dst(nodes, times)
+            blk.register_hook(_CachePartialHitsHook(cache_table, embeds, miss_idx, keys))
 
     return blk
 

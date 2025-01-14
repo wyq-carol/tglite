@@ -190,9 +190,21 @@ class TBlock(object):
         """Returns True when the block has the neighbor attributes, including dstindex, srcnodes, eid and ets."""
         return self._has_nbrs
 
+    
+
     def set_nbrs(self, dstindex: np.ndarray, srcnodes: np.ndarray,
                       eid: np.ndarray, ets: np.ndarray):
         """Sets the neighbor attributes for the block."""
+        def calculate_unique_rows_ratio(arr):
+            if arr.ndim != 1:
+                raise ValueError("输入的数组必须是一维的")
+            unique_elements, counts = np.unique(arr, return_counts=True)
+            num_unique_elements = len(unique_elements)
+            total_elements = len(arr)
+            unique_elements_ratio = num_unique_elements / total_elements
+            # print(f"unique_elements_ratio {unique_elements_ratio*100}%")
+            return unique_elements_ratio
+
         self.clear_nbrs()
         self._has_nbrs = True
         self._dstindex = dstindex
@@ -201,6 +213,8 @@ class TBlock(object):
         self._ets = ets
         self._edata = TFrame(len(eid))
         self._srcdata = TFrame(len(srcnodes))
+
+        calculate_unique_rows_ratio(srcnodes)
 
         # gpu_tracker = MemTracker()
         if self._g.storage_device() != torch.device("cpu"):
@@ -359,18 +373,26 @@ class TBlock(object):
         :param bool need_nbrs: Whether sampled neighbors are needed.
         :param run_hooks: Whether to run registered hooks.
         """
-        if need_nbrs:
-            self._check_has_nbrs()
-        output = fn(self)
-        if run_hooks:
-            output = self.run_hooks(output)
-        return output
+        with nvtx.annotate("blk.apply", color="red"):
+            with nvtx.annotate("blk.apply _check_has_nbrs", color="red"):
+                if need_nbrs:
+                    self._check_has_nbrs()
+            with nvtx.annotate("blk.apply fn", color="red"):
+                output = fn(self)
+            with nvtx.annotate("blk.apply run_hooks", color="green"):
+                if run_hooks:
+                    output = self.run_hooks(output)
+                return output
 
     def run_hooks(self, input: Optional[Tensor]) -> Optional[Tensor]:
         """Runs registered hooks on the input tensor in reversed order."""
-        for hook in reversed(self._hooks):
-            input = hook(self, input)
-        return input
+        with nvtx.annotate("blk run_hooks", color="green"):
+            i = 0
+            for hook in reversed(self._hooks):
+                with nvtx.annotate(f"blk.apply hook{i}", color="green"):
+                    input = hook(self, input)
+                    i = i + 1
+            return input
 
     def clear_hooks(self):
         """Clears all the hooks."""
@@ -378,7 +400,8 @@ class TBlock(object):
 
     def register_hook(self, hook: Callable):
         """Registers a hook for running post-processing."""
-        self._hooks.append(hook)
+        with nvtx.annotate("blk register_hook", color="green"):
+            self._hooks.append(hook)
 
     def _check_has_nbrs(self):
         """

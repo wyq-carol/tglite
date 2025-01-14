@@ -112,7 +112,6 @@ class TGN(nn.Module):
         mem = blk.mem_data()
         time_start_1 = tt.start()
         with nvtx.annotate("update mem-mem_cell", color="purple"):
-            # import pdb;pdb.set_trace()
             mem = self.mem_cell(mail, mem)
         tt.t_mem_update_gru_cell += tt.elapsed(time_start_1)
         time_start_2 = tt.start()
@@ -125,6 +124,7 @@ class TGN(nn.Module):
         mem = batch.g.mem.data
 
         with nvtx.annotate("save raw msgs-block_adj", color="red"):
+            # 由于new blk 我肯定load了很多没用的东西
             blk = batch.block_adj(self.ctx)
         with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
             blk = tg.op.coalesce(blk, by='latest')
