@@ -7,7 +7,13 @@ import tglite as tg
 import support
 from tgn import TGN
 import nvtx
-
+import torch
+import ctypes
+# Load the allocator
+new_alloc = torch.cuda.memory.CUDAPluggableAllocator(
+    'alloc.so', 'my_malloc', 'my_free')
+# Swap the current allocator
+torch.cuda.memory.change_current_allocator(new_alloc)
 ### arguments
 
 parser = argparse.ArgumentParser()
@@ -113,6 +119,8 @@ optimizer = torch.optim.Adam(model.parameters(), lr=LEARN_RATE)
 
 train_end, val_end = support.data_split(g.num_edges(), 0.7, 0.15)
 neg_sampler = lambda size: np.random.randint(0, g.num_nodes(), size)
+
+# torch.cuda.memory._record_memory_history()
 
 trainer = support.LinkPredTrainer(
     ctx, model, criterion, optimizer, neg_sampler,

@@ -180,7 +180,9 @@ class LinkPredTrainer(object):
                     # print(f"loss {loss_separated}, loss0 {loss0}, loss1 {loss1}")
                     epoch_loss += float(loss)
                 with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
+                    # torch.cuda.memory._dump_snapshot("after-forward.pickle")
                     loss.backward()
+                    # torch.cuda.memory._dump_snapshot("after-backward.pickle")
                     self.optimizer.step()
                     tt.t_backward += tt.elapsed(t_start)
             tt.t_loop = tt.elapsed(t_loop)
