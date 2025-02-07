@@ -11,6 +11,7 @@ from typing import Callable, Optional, Tuple, Union
 
 import tglite as tg
 from tglite._stats import tt
+from tglite.gpu_mem_track import *
 import nvtx
 
 
@@ -76,13 +77,15 @@ def load_feats(g: tg.TGraph, device, d: str, data_path: str=''):
     if Path(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt')).exists():
         edge_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt'))
         edge_feats = edge_feats.type(torch.float32)
-    elif d in ['mooc', 'lastfm', 'wiki-talk']:
+    elif d in ['mooc', 'lastfm']:
         edge_feats = torch.randn(g.num_edges(), 128, dtype=torch.float32)
+    elif d in ['wiki-talk', 'stackoverflow']:
+        edge_feats = torch.randn(g.num_edges(), 172, dtype=torch.float32)
 
     if Path(os.path.join(data_path, f'/home/volume/{d}/node_features.pt')).exists():
         node_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/node_features.pt'))
         node_feats = node_feats.type(torch.float32)
-    elif d in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk']:
+    elif d in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk', 'stackoverflow']:
         node_feats = torch.randn(g.num_nodes(), edge_feats.shape[1], dtype=torch.float32)
 
     print('edge feat:', None if edge_feats is None else edge_feats.shape)
@@ -111,10 +114,17 @@ class EdgePredictor(nn.Module):
         self.act = nn.ReLU()
 
     def forward(self, src: Tensor, dst: Tensor) -> Tensor:
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         h_src = self.src_fc(src)
+        # torch.cuda.empty_cache() # empty cache开销很大(会长60s+)
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         h_dst = self.dst_fc(dst)
+        # torch.cuda.empty_cache() # 这里的写法对显存释放很不友好
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         h_out = self.act(h_src + h_dst)
-        return self.out_fc(h_out)
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+        ans = self.out_fc(h_out)
+        return ans
 
 
 class LinkPredTrainer(object):
@@ -137,13 +147,15 @@ class LinkPredTrainer(object):
         self.model_mem_path = model_mem_path
 
     def train(self):
-        # import pdb; pdb.set_trace()
+
         tt.csv_open('out-stats.csv')
         tt.csv_write_header()
         best_epoch = 0
         best_ap = 0
         for e in range(self.epochs):
             print(f'epoch {e}:')
+            # print()
+
             torch.cuda.synchronize()
             t_epoch = tt.start()
 
@@ -156,18 +168,29 @@ class LinkPredTrainer(object):
 
             epoch_loss = 0.0
             t_loop = tt.start()
+            # batch_i = 0
+
             for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
+                # print(f'batch {batch_i}:')
+
+                # batch_i = batch_i + 1 # 超级低效行为(会长40s+)
                 t_start = tt.start()
                 batch.neg_nodes = self.neg_sampler(len(batch))
+
                 tt.t_prep_batch += tt.elapsed(t_start)
 
                 t_start = tt.start()
+
                 self.optimizer.zero_grad()
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+
                 pred_pos, pred_neg = self.model(batch)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 tt.t_forward += tt.elapsed(t_start)
 
                 t_start = tt.start()
                 with nvtx.annotate("TRAIN-cal_loss", color="green"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     targets = torch.cat([torch.ones_like(pred_pos), torch.zeros_like(pred_neg)], dim=0)
                     preds = torch.cat([pred_pos, pred_neg], dim=0)
                     loss = self.criterion(preds, targets)
@@ -180,12 +203,18 @@ class LinkPredTrainer(object):
                     # print(f"loss {loss_separated}, loss0 {loss0}, loss1 {loss1}")
                     epoch_loss += float(loss)
                 with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     loss.backward()
+                    # torch.cuda.empty_cache()
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     self.optimizer.step()
                     tt.t_backward += tt.elapsed(t_start)
+                # print(f"cur-batch memory {torch.cuda.memory_allocated()/(2**20)}")
+                # print(f"max-batch memory {torch.cuda.max_memory_allocated()/(2**20)}")
             tt.t_loop = tt.elapsed(t_loop)
 
             with nvtx.annotate("TRAIN-eval", color="green"):
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 t_eval = tt.start()
                 ap, auc = self.eval(start_idx=self.train_end, end_idx=self.val_end)
                 tt.t_eval = tt.elapsed(t_eval)
@@ -203,6 +232,7 @@ class LinkPredTrainer(object):
             tt.print_epoch()
             tt.reset_epoch()
         tt.csv_close()
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         print('best model at epoch {}'.format(best_epoch))
 
     @torch.no_grad()

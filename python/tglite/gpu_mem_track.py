@@ -5,6 +5,80 @@ import inspect
 import torch
 import numpy as np
 
+r, ma, mr, mr_s, mr_l = 0, 0, 0, 0, 0
+count = 0
+count_memory_stats = 0
+
+def pack_hook(x):
+    global gpumemtracker
+    gpumemtracker.track()
+    print("Packing", x)
+    tmp = x
+    gpumemtracker.track()
+    return tmp
+
+def unpack_hook(x):
+    print("Unpacking", x)
+    return x
+
+def sep(num):
+    if num % 2 ** 20 == 0:
+        return f"{num} = {num // 2 ** 20}MB"
+    else:
+        return f"{num} ≈ {num / 2 ** 20:.4f}MB"
+
+def memory_stats(inputfile, inputline, device=0):
+    return
+    d = torch.cuda.memory_stats(device)
+
+    print(f'cur small_pool {sep(d["allocated_bytes.small_pool.current"]).rjust(20)}')
+    print(f'cur large_pool {sep(d["allocated_bytes.large_pool.current"]).rjust(20)}')
+
+    global r, ma, mr, mr_s, mr_l
+    global count, count_memory_stats
+    last_r, last_ma, last_mr, last_mr_s, last_mr_l = r, ma, mr, mr_s, mr_l
+    r = d["requested_bytes.all.current"]
+    ma = d["allocated_bytes.all.current"]
+    mr = d["reserved_bytes.all.current"]
+    mr_s, mr_l = d["segment.small_pool.current"], d["segment.large_pool.current"]
+
+    mat = d["active_bytes.all.current"]
+    miat = d["inactive_split_bytes.all.current"]
+
+    if mr_s - last_mr_s == 1 and mr_l - last_mr_l == 0:
+        cur_mr_tag = 'new segment belong to small pool'
+    elif mr_s - last_mr_s == 0 and mr_l - last_mr_l == 1:
+        cur_mr_tag = 'new segment belong to large pool'
+    elif mr_s - last_mr_s == 0 and mr_l - last_mr_l == 0:
+        cur_mr_tag = 'no new segment'
+    else:
+        # 1. self.mem_cell(mail, mem) _VF                             ===update mem===
+        # 2. (only all on GPU) torch.cos(self.w(is_zero_tensor, ts))  ===time encode===*2?
+        # 3. nfeat_map(nfeat)                                         ===before aggr===
+        # 4. (only all on GPU) self.out_fc(h_out)                     ===final output===
+        if count < 7:
+            count += 1
+            cur_mr_tag = f'new segments belongs to {mr_s - last_mr_s} small pools, {mr_l - last_mr_l} large pools'
+        else:
+            raise ValueError
+    mr_tag = f'small_pool({mr_s})   large_pool({mr_l})'
+    mat_tag = f'small_pool({d["active.small_pool.current"]})   large_pool({d["active.large_pool.current"]})'
+    miat_tag = f'small_pool({d["inactive_split.small_pool.current"]})   large_pool({d["inactive_split.large_pool.current"]})'
+
+    if mat + miat != mr:
+        print(f"***mat: {mat}, miat: {miat}, mr: {mr}***")
+    assert mat + miat == mr  # 已分配显存 + 未分配显存 = Segments 总和
+    assert mat == ma
+    print("")
+    print(f"count_memory_stats {count_memory_stats}: {inputfile} at line {inputline}")
+    count_memory_stats += 1
+    print(f"operation requested memory  : {sep(r-last_r).rjust(20)}")
+    print(f"operation allocated memory  : {sep(ma-last_ma).rjust(20)}")
+    print(f"operation reserved  memory  : {sep(mr-last_mr).rjust(20)}    {cur_mr_tag}")
+    print(f"total     reserved  memory  : {sep(mr).rjust(20)}    {mr_tag}")
+    print(f"total     active    memory  : {sep(mat).rjust(20)}    {mat_tag}")
+    print(f"total     inactive  memory  : {sep(miat).rjust(20)}    {miat_tag}")
+
 dtype_memory_size_dict = {
     torch.float64: 64/8,
     torch.double: 64/8,
@@ -73,7 +147,7 @@ class MemTracker(object):
 
     def clear_cache(self):
         gc.collect()
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
     def print_all_gpu_tensor(self, file=None):
         for x in self.get_tensors():
@@ -111,3 +185,6 @@ class MemTracker(object):
             f.write(f"\nAt {where_str:<50}"
                     f" Total Tensor Used Memory:{self.get_tensor_usage():<7.1f}Mb"
                     f" Total Allocated Memory:{self.get_allocate_usage():<7.1f}Mb\n\n")
+
+global gpumemtracker
+gpumemtracker = MemTracker() # todo

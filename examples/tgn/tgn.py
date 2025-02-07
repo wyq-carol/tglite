@@ -8,6 +8,8 @@ from tglite._stats import tt
 import sys, os
 sys.path.append(os.path.join(os.getcwd(), '..')) 
 import support
+from tglite.gpu_mem_track import *
+from tglite.mymodule import *
 import time
 import nvtx
 
@@ -22,7 +24,7 @@ class TGN(nn.Module):
         self.dim_edge = dim_edge
         self.num_layers = num_layers
         self.nfeat_map = None if dim_node == dim_embed else nn.Linear(dim_node, dim_embed)
-        self.mem_cell = nn.GRUCell(2 * dim_embed + dim_edge + dim_time, dim_embed)
+        self.mem_cell = GRUCell(2 * dim_embed + dim_edge + dim_time, dim_embed)
         self.mem_time_encode = tg.nn.TimeEncode(dim_time)
         self.attn = nn.ModuleList([
             TemporalAttnLayer(ctx,
@@ -41,7 +43,9 @@ class TGN(nn.Module):
         with nvtx.annotate("forward", color="purple"):
             # setup message passing
             with nvtx.annotate("dedup and cache", color="purple"):
+
                 head = batch.block(self.ctx)
+
                 for i in range(self.num_layers):
                     tail = head if i == 0 \
                         else tail.next_block(include_dst=True, use_dst_times=False)
@@ -51,14 +55,19 @@ class TGN(nn.Module):
 
             # load data / feats
             with nvtx.annotate("preload data/feat", color="purple"):
+
                 tg.op.preload(head, use_pin=True)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             if tail.num_dst() > 0:
                 # t_start = tt.start()
-                # import pdb;pdb.set_trace()
                 with nvtx.annotate("update mem", color="purple"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     mem = self.update_memory(tail)
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 # tt.t_update_memory += tt.elapsed(t_start)
                 nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
+                # torch.cuda.empty_cache()
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
                 tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
                 # tt.t_mem_update += tt.elapsed(t_start)
@@ -67,16 +76,25 @@ class TGN(nn.Module):
 
             # compute embeddings
             with nvtx.annotate("op aggr", color="purple"):
+                # torch.cuda.empty_cache() # del 的变量占用的空间?不会立即释放
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
             del head
             del tail
 
             # compute scores
             with nvtx.annotate("compute score", color="purple"):
+                # torch.cuda.empty_cache()
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 src, dst, neg = batch.split_data(embeds)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 scores = self.edge_predictor(src, dst)
+                # torch.cuda.empty_cache()
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 if neg is not None:
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     scores = (scores, self.edge_predictor(src, neg))
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             del embeds
             del src
             del dst
@@ -85,49 +103,66 @@ class TGN(nn.Module):
             # memory messages
             t_start = tt.start()
             with nvtx.annotate("save raw msgs", color="purple"):
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 self.save_raw_msgs(batch)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             tt.t_post_update += tt.elapsed(t_start)
 
             return scores
 
     def update_memory(self, blk: tg.TBlock) -> Tensor:
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         cdev = blk.g.compute_device()
-        # import pdb;pdb.set_trace()
         nodes = blk.allnodes()
 
         # index, reverse = torch.unique(nodes, return_inverse=True)
         # mail_ts = blk.g.mailbox.time[index][reverse]
         time_start_0 = tt.start()
-        mail_ts = blk.g.mailbox.time[nodes]
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+        mail_ts = blk.g.mailbox.time[nodes] # on cpu? no new segments
         # index, reverse = torch.unique(nodes, return_inverse=True)
         # mail_ts = blk.g.mailbox.time[index][reverse]
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         tt.tt_mail_ts_load += tt.elapsed(time_start_0)
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         delta = mail_ts - blk.g.mem.time[nodes]
         delta = delta.squeeze().to(cdev)
         with nvtx.annotate("update mem-precompute_times", color="purple"):
-            mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta)
-        mail = torch.cat([blk.mail(), mail], dim=1)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta) # on cpu
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+        mail = torch.cat([blk.mail(), mail], dim=1) # no new segments 不等同于no request
+        # torch.cuda.empty_cache() # 这里mail占用的空间?不会立即释放
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
-        mem = blk.mem_data()
+        mem = blk.mem_data() # on cpu?
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         time_start_1 = tt.start()
         with nvtx.annotate("update mem-mem_cell", color="purple"):
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             mem = self.mem_cell(mail, mem)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         tt.t_mem_update_gru_cell += tt.elapsed(time_start_1)
         time_start_2 = tt.start()
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         blk.g.mem.update(nodes, mem, mail_ts)
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         tt.t_mem_update_after += tt.elapsed(time_start_2)
         return mem
 
     def save_raw_msgs(self, batch: tg.TBatch):
         sdev = batch.g.storage_device()
         mem = batch.g.mem.data
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         with nvtx.annotate("save raw msgs-block_adj", color="red"):
             # 由于new blk 我肯定load了很多没用的东西
             blk = batch.block_adj(self.ctx)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
             blk = tg.op.coalesce(blk, by='latest')
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         with nvtx.annotate("save raw msgs-uniq nbrs", color="red"):
             uniq = torch.from_numpy(blk.dstnodes).long().to(sdev)
@@ -135,8 +170,11 @@ class TGN(nn.Module):
             if self.dim_edge > 0:
                 eids = torch.from_numpy(blk.eid).long().to(sdev)
                 mail = torch.cat([mem[uniq], mem[nbrs], batch.g.efeat[eids]], dim=1)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             else:
                 mail = torch.cat([mem[uniq], mem[nbrs]], dim=1)
             mail_ts = torch.from_numpy(blk.ets).to(sdev)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
             batch.g.mailbox.store(uniq, mail, mail_ts)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)

@@ -7,7 +7,7 @@ import tglite as tg
 import support
 from tgn import TGN
 import nvtx
-
+from tglite.gpu_mem_track import *
 ### arguments
 
 parser = argparse.ArgumentParser()
@@ -64,13 +64,17 @@ g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv')
 
 if args.move:
     support.load_feats(g, device, DATA, DATA_PATH)
+    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
     dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
     dim_nfeat = g.nfeat.shape[1]
 
+
     g.set_compute(device)
     g.set_storage(device)
+
     g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
     g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
+    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 else:
     support.load_feats(g, "cpu", DATA, DATA_PATH)
     dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
@@ -107,12 +111,14 @@ model = model.to(device)
 # criterion = torch.nn.BCEWithLogitsLoss()
 criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARN_RATE)
+# memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
 
 ### training
 
 train_end, val_end = support.data_split(g.num_edges(), 0.7, 0.15)
 neg_sampler = lambda size: np.random.randint(0, g.num_nodes(), size)
+
 
 trainer = support.LinkPredTrainer(
     ctx, model, criterion, optimizer, neg_sampler,
@@ -121,5 +127,11 @@ trainer = support.LinkPredTrainer(
 
 with nvtx.annotate("TRAIN", color="green"):
     trainer.train()
+print(f"cur memory {torch.cuda.memory_allocated()/(2**20)}")
+print(f"max memory {torch.cuda.max_memory_allocated()/(2**20)}")
+d = torch.cuda.memory_stats(device)
+print(f'cur small_pool {sep(d["allocated_bytes.small_pool.peak"]).rjust(20)}')
+print(f'cur large_pool {sep(d["allocated_bytes.large_pool.peak"]).rjust(20)}')
+
 with nvtx.annotate("TEST", color="green"):
     trainer.test()

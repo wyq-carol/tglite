@@ -491,9 +491,7 @@ class TBlock(object):
         """Loads the mail to the TGraph's computation device"""
         with nvtx.annotate("_block _load_mail", color="red"):
             t_start = tt.start()
-            sdev = self._g.storage_device()
-            cdev = self._g.compute_device()
-            if sdev.type == 'cuda' and cdev.type == 'cuda':
+            if self._g.storage_device() != torch.device("cpu"):
                 with nvtx.annotate("_block _load_mail nodes", color="red"):
                     nodes = self.allnodes()
                 with nvtx.annotate("_block _load_mail data", color="red"):

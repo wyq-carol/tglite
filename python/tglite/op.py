@@ -10,6 +10,7 @@ from ._block import TBlock
 from ._context import TContext
 from ._stats import tt
 import nvtx
+from tglite.gpu_mem_track import *
 
 
 # def find_last_message(uniq_nodes: np.ndarray, sorted_edges: np.ndarray):
@@ -129,15 +130,23 @@ def preload(blk: TBlock, use_pin=True):
         if curr.num_dst() > 0:
             if curr.next is None:
                 with nvtx.annotate("preload mail", color="red"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     curr._load_mail(use_pin=use_pin)
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 with nvtx.annotate("preload mem_data", color="red"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     curr._load_mem_data(use_pin=use_pin)
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             if curr.has_nbrs():
                 if curr.next is None:
                     with nvtx.annotate("preload nfeat", color="red"):
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                         curr._load_nfeat(use_pin=use_pin)
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 with nvtx.annotate("preload efeat", color="red"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     curr._load_efeat(use_pin=use_pin)
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         curr = curr.prev
 
 
@@ -396,25 +405,33 @@ def precomputed_times(ctx: TContext, id: int, encoder: Callable, times: Tensor) 
     :return: a precomputed tensor of the given times
     '''
     with nvtx.annotate("precompute_times", color="red"):
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         if ctx._training or not ctx._time_enabled:
             return encoder(False, times)
     
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         time_table = ctx._time_tables.get(id)
         if time_table is None:
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             time_table = encoder(torch.arange(
                 ctx._time_window + 1, dtype=torch.float, device=ctx._g.compute_device()))
             ctx._time_tables[id] = time_table
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         size = times.shape[0]
         hit_count, hit_idx, output, times, inv_idx = \
             _c.find_dedup_time_hits(times, time_table, ctx._time_window)
         uniq_size = times.shape[0]
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         if hit_count != uniq_size:
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             miss_idx = (~ hit_idx)
             times = times[miss_idx]
             output[miss_idx] = encoder(times.squeeze())
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         output = output[inv_idx]
         output = output.view(size, -1)
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         return output
