@@ -40,6 +40,67 @@ class TGN(nn.Module):
         self.dedup = dedup
 
     def forward(self, batch: tg.TBatch) -> Tensor:
+        if ON_HETER is False:
+            return self.forward_origin(batch)
+        else:
+            return self.forward0(batch)
+        
+    def forward0(self, batch: tg.TBatch) -> Tensor:
+        head = batch.block(self.ctx)
+
+        # setup message passing
+        for i in range(self.num_layers): # 两层GNN有额外的问题，先处理1层
+            tail = head if i == 0 \
+                else tail.next_block(include_dst=True, use_dst_times=False)
+            tail = tg.op.dedup(tail) if self.dedup else tail
+            with nvtx.annotate("sample", color="purple"):
+                tail = self.sampler.sample(tail)
+        
+        # load data / feats
+        tg.op.preload(head, use_pin=True)
+
+        if tail.num_dst() > 0:
+            mem = self.update_memory0(tail)
+            nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
+            tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+            tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+            del nfeat
+            del mem
+
+        # compute embeddings
+        embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
+        del head
+        del tail
+
+        # compute scores
+        src, dst, neg = batch.split_data(embeds)
+        scores = self.edge_predictor(src, dst)
+        if neg is not None:
+            scores = (scores, self.edge_predictor(src, neg))
+        del embeds
+        del src
+        del dst
+        del neg
+        self.save_raw_msgs(batch)
+        return scores
+    
+    def update_memory0(self, blk: tg.TBlock) -> Tensor:
+        cdev = blk.g.compute_device()
+        nodes = blk.allnodes()
+
+        mail_ts = blk.g.mailbox.time[nodes] # on cpu? no new segments
+
+        delta = mail_ts - blk.g.mem.time[nodes]
+        delta = delta.squeeze().to(cdev)
+        mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta) # on cpu
+        mail = torch.cat([blk.mail(), mail], dim=1) # no new segments 不等同于no request
+
+        mem = blk.mem_data() # on cpu?
+        mem = self.mem_cell(mail, mem)
+        blk.g.mem.update(nodes, mem, mail_ts)
+        return mem
+
+    def forward_origin(self, batch: tg.TBatch) -> Tensor:
         with nvtx.annotate("forward", color="purple"):
             # setup message passing
             with nvtx.annotate("dedup and cache", color="purple"):
