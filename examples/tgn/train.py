@@ -8,6 +8,8 @@ import support
 from tgn import TGN
 import nvtx
 from tglite.gpu_mem_track import *
+import tglite.config
+from tglite.memory_management import *
 ### arguments
 
 parser = argparse.ArgumentParser()
@@ -32,6 +34,8 @@ parser.add_argument('--opt-dedup', action='store_true', help='enable dedup optim
 parser.add_argument('--opt-time', action='store_true', help='enable precomputing time encodings')
 parser.add_argument('--time-window', type=str, default=1e4, help='time window to precompute (default: 1e4)')
 parser.add_argument('--opt-all', action='store_true', help='enable all available optimizations')
+parser.add_argument('--all-on-gpu', type=int, default=1, help='is node memory all-on-gpu')
+parser.add_argument('--on-heter', type=int, default=0, help='is node memory all-on-gpu')
 args = parser.parse_args()
 print(args)
 
@@ -57,37 +61,52 @@ SAMPLING: str = args.sampling
 OPT_DEDUP: bool = args.opt_dedup or args.opt_all
 OPT_TIME: bool = args.opt_time or args.opt_all
 TIME_WINDOW: int = int(args.time_window)
+tglite.config.ALL_ON_GPU = int(args.all_on_gpu)
+tglite.config.ON_HETER = int(args.on_heter)
+print(f"ON_HETER {tglite.config.ON_HETER} ALL_ON_GPU {tglite.config.ALL_ON_GPU}")
 
 ### load data
 
 g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
 
-if args.move:
+if tglite.config.ON_HETER:
     support.load_feats(g, device, DATA, DATA_PATH)
     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
     dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
     dim_nfeat = g.nfeat.shape[1]
 
+    g.set_compute(device)
+    g.set_storage(device)
+
+    # WYQ_MemMana
+    g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
+    g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
+elif tglite.config.ALL_ON_GPU:
+    support.load_feats(g, device, DATA, DATA_PATH)
+    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+    dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
+    dim_nfeat = g.nfeat.shape[1]
 
     g.set_compute(device)
     g.set_storage(device)
 
     g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
     g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
-    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 else:
     support.load_feats(g, "cpu", DATA, DATA_PATH)
     dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
     dim_nfeat = g.nfeat.shape[1]
 
-    g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
-    g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
     g.set_compute(device)
 
+    g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat)
+    g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
+    if args.move:
+        g.move_data(device)
+
+
 z = None
-if args.move:
-    g.move_data(device)
-    # z = torch.zeros(1).float().to(device)
+# z = torch.zeros(1).float().to(device)
 
 ctx = tg.TContext(g)
 ctx.set_z(z)

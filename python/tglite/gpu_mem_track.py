@@ -5,7 +5,6 @@ import inspect
 import torch
 import numpy as np
 
-ON_HETER = True
 
 r, ma, mr, mr_s, mr_l = 0, 0, 0, 0, 0
 count = 0

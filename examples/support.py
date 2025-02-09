@@ -13,7 +13,7 @@ import tglite as tg
 from tglite._stats import tt
 from tglite.gpu_mem_track import *
 import nvtx
-
+import tglite.config
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -63,8 +63,23 @@ def load_graph(path: Union[str, Path]) -> tg.TGraph:
     print('num nodes:', g.num_nodes())
     return g
 
-
 def load_feats(g: tg.TGraph, device, d: str, data_path: str=''):
+    """
+    Load edge features and node features to g from /home/volume/{d}/edge_features.pt and
+    /home/volume/{d}/edge_features.pt. If no file, create random edge and node features for data 'mooc',
+    'lastfm' and 'wiki-talk', create random edge features for data 'wiki' and 'reddit', None for
+    other data.
+    """
+    if tglite.config.ON_HETER:
+        load_feats0(g, device, d, data_path)
+    elif tglite.config.ALL_ON_GPU:
+        assert tglite.config.ON_HETER == 0
+        load_feats_all_on_gpu(g, device, d, data_path)
+    else:
+        assert tglite.config.ON_HETER == 0 and tglite.config.ALL_ON_GPU == 0
+        load_feats_origin(g, device, d, data_path)
+
+def load_feats0(g: tg.TGraph, device, d: str, data_path: str=''):
     """
     Load edge features and node features to g from /home/volume/{d}/edge_features.pt and
     /home/volume/{d}/edge_features.pt. If no file, create random edge and node features for data 'mooc',
@@ -97,6 +112,67 @@ def load_feats(g: tg.TGraph, device, d: str, data_path: str=''):
         g._g_efeat = edge_feats.to(device)
         g._g_nfeat = node_feats.to(device)
 
+def load_feats_all_on_gpu(g: tg.TGraph, device, d: str, data_path: str=''):
+    """
+    Load edge features and node features to g from /home/volume/{d}/edge_features.pt and
+    /home/volume/{d}/edge_features.pt. If no file, create random edge and node features for data 'mooc',
+    'lastfm' and 'wiki-talk', create random edge features for data 'wiki' and 'reddit', None for
+    other data.
+    """
+    edge_feats = None
+    node_feats = None
+
+    if Path(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt')).exists():
+        edge_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt'))
+        edge_feats = edge_feats.type(torch.float32)
+    elif d in ['mooc', 'lastfm']:
+        edge_feats = torch.randn(g.num_edges(), 128, dtype=torch.float32)
+    elif d in ['wiki-talk', 'stackoverflow']:
+        edge_feats = torch.randn(g.num_edges(), 172, dtype=torch.float32)
+
+    if Path(os.path.join(data_path, f'/home/volume/{d}/node_features.pt')).exists():
+        node_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/node_features.pt'))
+        node_feats = node_feats.type(torch.float32)
+    elif d in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk', 'stackoverflow']:
+        node_feats = torch.randn(g.num_nodes(), edge_feats.shape[1], dtype=torch.float32)
+
+    print('edge feat:', None if edge_feats is None else edge_feats.shape)
+    print('node feat:', None if node_feats is None else node_feats.shape)
+    g.efeat = edge_feats.to(device)
+    g.nfeat = node_feats.to(device)
+
+    if device != torch.device("cpu"):
+        g._g_efeat = edge_feats.to(device)
+        g._g_nfeat = node_feats.to(device)
+
+def load_feats_origin(g: tg.TGraph, device, d: str, data_path: str=''):
+    """
+    Load edge features and node features to g from /home/volume/{d}/edge_features.pt and
+    /home/volume/{d}/edge_features.pt. If no file, create random edge and node features for data 'mooc',
+    'lastfm' and 'wiki-talk', create random edge features for data 'wiki' and 'reddit', None for
+    other data.
+    """
+    edge_feats = None
+    node_feats = None
+
+    if Path(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt')).exists():
+        edge_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/edge_features.pt'))
+        edge_feats = edge_feats.type(torch.float32)
+    elif d in ['mooc', 'lastfm']:
+        edge_feats = torch.randn(g.num_edges(), 128, dtype=torch.float32)
+    elif d in ['wiki-talk', 'stackoverflow']:
+        edge_feats = torch.randn(g.num_edges(), 172, dtype=torch.float32)
+
+    if Path(os.path.join(data_path, f'/home/volume/{d}/node_features.pt')).exists():
+        node_feats = torch.load(os.path.join(data_path, f'/home/volume/{d}/node_features.pt'))
+        node_feats = node_feats.type(torch.float32)
+    elif d in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk', 'stackoverflow']:
+        node_feats = torch.randn(g.num_nodes(), edge_feats.shape[1], dtype=torch.float32)
+
+    print('edge feat:', None if edge_feats is None else edge_feats.shape)
+    print('node feat:', None if node_feats is None else node_feats.shape)
+    g.efeat = edge_feats
+    g.nfeat = node_feats
 
 def data_split(num_samples: int, train_percent: float, val_percent: float) -> Tuple[int, int]:
     train_end = int(np.ceil(num_samples * train_percent))
@@ -145,6 +221,7 @@ class LinkPredTrainer(object):
         self.val_end = val_end
         self.model_path = model_path
         self.model_mem_path = model_mem_path
+        self.batch_num = 0
 
     def train(self):
 
@@ -172,6 +249,11 @@ class LinkPredTrainer(object):
 
             for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
                 # print(f'batch {batch_i}:')
+                self.batch_num += 1
+                if (self.batch_num > 5 and tglite.config.ON_HETER):
+                    print(f"cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
+                    print(f"max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
+                    exit()
 
                 # batch_i = batch_i + 1 # 超级低效行为(会长40s+)
                 t_start = tt.start()
