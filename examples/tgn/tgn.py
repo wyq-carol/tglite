@@ -56,16 +56,18 @@ class TGN(nn.Module):
             head = batch.block(self.ctx)
 
             # setup message passing
-            for i in range(self.num_layers): # 两层GNN有额外的问题，先处理1层
+            for i in range(self.num_layers): # TODO 两层GNN有额外的问题，先处理1层
                 tail = head if i == 0 \
                     else tail.next_block(include_dst=True, use_dst_times=False)
                 tail = tg.op.dedup(tail) if self.dedup else tail
                 with nvtx.annotate("sample", color="purple"):
                     tail = self.sampler.sample(tail)
+            # TODO 这里可以暂时整体offload -> 未来加入采样动态性的考虑
             
             # load data / feats
             with nvtx.annotate("preload data/feat", color="purple"):
                 tg.op.preload(head, use_pin=True)
+                # TODO
 
             if tail.num_dst() > 0:
                 with nvtx.annotate("update mem", color="purple"):
@@ -97,31 +99,21 @@ class TGN(nn.Module):
             return scores
     
     def update_memory0(self, blk: tg.TBlock) -> Tensor:
-        # 1. 对update_memory0进行去重
+        # 1. [DONE]对update_memory0进行去重
+        # 2. [TODO]将下个batch使用的特征放在GPU上，其余放在CPU上
+        # 3. [TODO]将热节点放在GPU上，其余放在CPU上
         cdev = blk.g.compute_device()
-        nodes = blk.allnodes()
-
-        mail_ts = blk.g.mailbox.time[nodes] # on cpu? no new segments
-
-        delta = mail_ts - blk.g.mem.time[nodes]
-        delta = delta.squeeze().to(cdev)
-        mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta) # on cpu
-        mail = torch.cat([blk.mail(), mail], dim=1) # no new segments 不等同于no request
-
-        mem = blk.mem_data() # on cpu?
-
         nodes = blk.allnodes()
         unique_nodes, inverse_indices = torch.unique(nodes, return_inverse=True)
         unique_mail_ts = blk.g.mailbox.time[unique_nodes]
         delta = unique_mail_ts - blk.g.mem.time[unique_nodes]
-        mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta) # on cpu
-        # mail = torch.cat([_g_mail[unique_nodes], mail], dim=1)
-        
-        # if mail.
-
+        mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to(cdev)) # on GPU
+        mail = torch.cat([blk._g.mailbox.mail[unique_nodes].to(cdev), mail], dim=1)
+        mem = blk._g.mem._data[unique_nodes].to(cdev)
         mem = self.mem_cell(mail, mem)
-        blk.g.mem.update(nodes, mem, mail_ts)
-        return mem
+        blk.g.mem.update(unique_nodes, mem, unique_mail_ts) # 目前为写回CPU
+
+        return mem[inverse_indices]
 
     def forward_origin(self, batch: tg.TBatch) -> Tensor:
         with nvtx.annotate("forward", color="purple"):
@@ -136,6 +128,11 @@ class TGN(nn.Module):
                     tail = tg.op.dedup(tail) if self.dedup else tail
                     with nvtx.annotate("sample", color="purple"):
                         tail = self.sampler.sample(tail)
+                    if tglite.config.ON_STATISTIC:
+                        # 1. 统计热节点
+                        node_centric_skew(tail._dstnodes, tail._srcnodes)
+                        # 2. 将采样完整offload 出去 WYQ_TODO: 保存一整个sample文件
+                        add_samples((tail._dstnodes, tail._dstindex, tail._srcnodes, tail._eid, tail._ets))
 
             # load data / feats
             with nvtx.annotate("preload data/feat", color="purple"):

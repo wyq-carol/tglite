@@ -105,12 +105,9 @@ def load_feats0(g: tg.TGraph, device, d: str, data_path: str=''):
 
     print('edge feat:', None if edge_feats is None else edge_feats.shape)
     print('node feat:', None if node_feats is None else node_feats.shape)
+    # WYQ TODO
     g.efeat = edge_feats.to(device)
     g.nfeat = node_feats.to(device)
-
-    if device != torch.device("cpu"):
-        g._g_efeat = edge_feats.to(device)
-        g._g_nfeat = node_feats.to(device)
 
 def load_feats_all_on_gpu(g: tg.TGraph, device, d: str, data_path: str=''):
     """
@@ -245,17 +242,18 @@ class LinkPredTrainer(object):
 
             epoch_loss = 0.0
             t_loop = tt.start()
-            # batch_i = 0
 
             for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
-                # print(f'batch {batch_i}:')
+                # test with nsys WYQ TODO
                 self.batch_num += 1
                 if (self.batch_num > 5 and tglite.config.ON_HETER):
-                    print(f"cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
-                    print(f"max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
+                    tt.t_batch_num_5 = tt.elapsed(t_loop)
+                    tt.print_batch_num_5()
+                    prefix='  '
+                    print(f"{prefix}batch5 | max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
+                    print(f"{prefix}batch5 | cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
                     exit()
 
-                # batch_i = batch_i + 1 # 超级低效行为(会长40s+)
                 t_start = tt.start()
                 batch.neg_nodes = self.neg_sampler(len(batch))
 

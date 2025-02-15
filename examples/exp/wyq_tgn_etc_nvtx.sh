@@ -9,9 +9,9 @@ export PYTHONPATH="$examples_dir"
 #     --n-layers 1 --n-heads 2 --n-nbrs 10 \
 #     --sampling recent "$@"
 
-# all on GPU
 
-nsys profile --force-overwrite true -o tgn_etc_nvtx python tgn/train.py -d wiki-talk --seed 0 --prefix exp --move \
+nsys profile --force-overwrite true -o tgn_etc_nvtx_6000 python tgn/train.py -d wiki-talk --seed 0 --prefix exp \
     --epochs 1 --bsize 6000 --n-threads 8 \
     --n-layers 1 --n-heads 2 --n-nbrs 10 \
-    --sampling recent "$@"
+    --sampling recent "$@" \
+    --on-heter 1 --all-on-gpu 0

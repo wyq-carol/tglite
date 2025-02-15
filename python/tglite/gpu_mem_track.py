@@ -4,11 +4,89 @@ import inspect
 
 import torch
 import numpy as np
-
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import numpy as np
+import matplotlib.pyplot as plt
+import os
 
 r, ma, mr, mr_s, mr_l = 0, 0, 0, 0, 0
 count = 0
 count_memory_stats = 0
+
+# node centric skew
+node_count = {}
+# samples for coding
+samples = []
+
+def add_samples(item):
+    samples.append(item)
+
+def get_samples(log_dir, log_name):
+    file_path = os.path.join(log_dir, f"samples_{log_name}.pt")
+    torch.save(samples, file_path)
+
+def node_centric_skew(dstnodes, srcnodes):
+    # 定义空字典用于统计节点出现次数
+    global node_count
+
+    # 合并所有节点
+    all_nodes = np.unique(np.concatenate((dstnodes, srcnodes)))
+
+    # 统计 dstnodes 中节点的出现次数
+    for node in all_nodes:
+        if node in node_count:
+            node_count[node] += 1
+        else:
+            node_count[node] = 1
+
+def get_node_centric_skew(log_dir, log_name):
+    # 假设 node_count 是一个全局变量，存储节点及其出现次数
+    global node_count
+
+    # 提取节点和对应的出现次数
+    nodes = list(node_count.keys())
+    counts = list(node_count.values())
+
+    # 使用 zip 函数将 nodes 和 counts 组合在一起，并按 counts 从大到小排序
+    sorted_pairs = sorted(zip(counts, nodes), reverse=True)
+    # 分离排序后的 nodes 和 counts
+    # nodes = [node for _, node in sorted_pairs]
+    # counts = [count for count, _ in sorted_pairs]
+    file_path = os.path.join(log_dir, f"nodes_{log_name}.pt")
+
+    torch.save(sorted_pairs, file_path)
+
+def draw_node_centric_skew(log_dir, log_name):
+    try:
+        # 假设 node_count 是一个全局变量，存储节点及其出现次数
+        global node_count
+
+        # 提取节点和对应的出现次数
+        nodes = list(node_count.keys())
+        counts = list(node_count.values())
+
+        print(f"nodes {nodes}")
+        print(f"counts {counts}")
+
+        # 绘制散点图
+        plt.figure(figsize=(10, 6))
+        plt.scatter(nodes, counts)
+        plt.xlabel('Nodes')
+        plt.ylabel('Occurrence Count')
+        plt.title('Node Occurrence Count Scatter Plot')
+
+        # 保存为 PNG 文件
+        file_path = os.path.join(log_dir, f"nodes_{log_name}_node_occurrence_scatter.png")
+
+        plt.savefig(file_path)
+        print(f"图像文件 {file_path} 保存成功。")
+
+        # 显示图形（可选）
+        plt.show()
+
+    except Exception as e:
+        print(f"保存图像文件时出现错误: {e}")
 
 def pack_hook(x):
     global gpumemtracker

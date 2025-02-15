@@ -31,6 +31,9 @@ class TimeTable(object):
         self.t_mem_update_gru_cell = 0.0
         self.t_mem_update_after = 0.0
 
+        # wyq_add tmp batch res
+        self.t_batch_num_5 = 0.0
+
     def start(self):
         # Uncomment for better breakdown timings
         #torch.cuda.synchronize()
@@ -40,6 +43,11 @@ class TimeTable(object):
         # Uncomment for better breakdown timings
         #torch.cuda.synchronize()
         return time.perf_counter() - start
+    
+    def print_batch_num_5(self, prefix='  '):
+        lines = f'' \
+            f'{prefix}batch5 | total:{self.t_batch_num_5:.2f}s \n'
+        print(lines, end='')
 
     def print_epoch(self, prefix='  '):
         """Print the timing breakdown of different components in an epoch"""

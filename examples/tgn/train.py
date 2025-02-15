@@ -35,7 +35,8 @@ parser.add_argument('--opt-time', action='store_true', help='enable precomputing
 parser.add_argument('--time-window', type=str, default=1e4, help='time window to precompute (default: 1e4)')
 parser.add_argument('--opt-all', action='store_true', help='enable all available optimizations')
 parser.add_argument('--all-on-gpu', type=int, default=1, help='is node memory all-on-gpu')
-parser.add_argument('--on-heter', type=int, default=0, help='is node memory all-on-gpu')
+parser.add_argument('--on-heter', type=int, default=0, help='is node memory heterogeneous-aware')
+parser.add_argument('--on-statistic', type=int, default=0, help='is statistic on')
 args = parser.parse_args()
 print(args)
 
@@ -63,24 +64,28 @@ OPT_TIME: bool = args.opt_time or args.opt_all
 TIME_WINDOW: int = int(args.time_window)
 tglite.config.ALL_ON_GPU = int(args.all_on_gpu)
 tglite.config.ON_HETER = int(args.on_heter)
-print(f"ON_HETER {tglite.config.ON_HETER} ALL_ON_GPU {tglite.config.ALL_ON_GPU}")
+tglite.config.ON_STATISTIC = int(args.on_statistic)
+print(f"ON_HETER {tglite.config.ON_HETER}, ON_STATISTIC {tglite.config.ON_STATISTIC}, ALL_ON_GPU {tglite.config.ALL_ON_GPU}")
+tglite.config.log_name = f"DATA_{DATA}_BS_{BATCH_SIZE}_NLAYER_{N_LAYERS}_NBR_{N_NBRS}_NHEAD_{N_HEADS}"
+tglite.config.log_dir = f"/home/volume/tglake_res/"
 
 ### load data
 
 g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
 
 if tglite.config.ON_HETER:
-    support.load_feats(g, device, DATA, DATA_PATH)
+    support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu
     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
     dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
     dim_nfeat = g.nfeat.shape[1]
 
     g.set_compute(device)
-    g.set_storage(device)
 
-    # WYQ_MemMana
-    g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
-    g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
+    g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat) # mailbox, mem on cpu
+    g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
+
+    # TODO memory management
+    
 elif tglite.config.ALL_ON_GPU:
     support.load_feats(g, device, DATA, DATA_PATH)
     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
@@ -146,11 +151,16 @@ trainer = support.LinkPredTrainer(
 
 with nvtx.annotate("TRAIN", color="green"):
     trainer.train()
-print(f"cur memory {torch.cuda.memory_allocated()/(2**20)}")
 print(f"max memory {torch.cuda.max_memory_allocated()/(2**20)}")
+print(f"cur memory {torch.cuda.memory_allocated()/(2**20)}")
 d = torch.cuda.memory_stats(device)
-print(f'cur small_pool {sep(d["allocated_bytes.small_pool.peak"]).rjust(20)}')
 print(f'cur large_pool {sep(d["allocated_bytes.large_pool.peak"]).rjust(20)}')
+print(f'cur small_pool {sep(d["allocated_bytes.small_pool.peak"]).rjust(20)}')
+
+if tglite.config.ON_STATISTIC:
+    get_node_centric_skew(tglite.config.log_dir, tglite.config.log_name)
+    draw_node_centric_skew(tglite.config.log_dir, tglite.config.log_name)
+    get_samples(tglite.config.log_dir, tglite.config.log_name)
 
 with nvtx.annotate("TEST", color="green"):
     trainer.test()
