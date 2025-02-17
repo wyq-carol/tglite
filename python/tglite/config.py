@@ -11,3 +11,5 @@ N_NBRS = [10]
 N_HEADS = [2]
 
 WYQ_TMP = 1
+
+num_nodes = None

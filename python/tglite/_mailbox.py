@@ -11,7 +11,9 @@ class Mailbox(object):
         self._size = size
         self._device = torch.device('cpu' if device is None else device)
 
-        self._mail = torch.zeros((num_nodes, size, dim), device=self._device).squeeze(dim=1)
+        self._mail = torch.zeros((num_nodes, size, dim), device=self._device).squeeze(dim=1).pin_memory()
+        # # default
+        # self._mail = torch.zeros((num_nodes, size, dim), device=self._device).squeeze(dim=1)
         self._time = torch.zeros((num_nodes, size), device=self._device).squeeze(dim=1)
         if size > 1:
             self._next = torch.zeros(num_nodes, dtype=torch.long, device=self._device)

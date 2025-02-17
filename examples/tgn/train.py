@@ -109,6 +109,7 @@ else:
     if args.move:
         g.move_data(device)
 
+tglite.config.num_nodes = g.nfeat.shape[0]
 
 z = None
 # z = torch.zeros(1).float().to(device)

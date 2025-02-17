@@ -20,7 +20,9 @@ class Memory(object):
         """
         self._device = torch.device('cpu' if device is None else device)
 
-        self._data = torch.zeros((num_nodes, dim), device=self._device)
+        self._data = torch.zeros((num_nodes, dim), device=self._device).pin_memory()
+        # # default
+        # self._data = torch.zeros((num_nodes, dim), device=self._device)
         self._time = torch.zeros(num_nodes, device=self._device)
 
         if list(self._data.shape) != [num_nodes, dim]:
