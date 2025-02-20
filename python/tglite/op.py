@@ -115,6 +115,74 @@ def coalesce(blk: TBlock, by='latest') -> TBlock:
     return blk
 
 
+def preload0_noMailMem(blk: TBlock, use_pin=True):
+    '''
+    Prefetch data (e.g. features, memory, mails) needed by the TBlock 
+    and its subsequent blocks for computations.
+
+    :param blk:
+    :param use_pin: whether to pin memory
+    '''
+    curr = blk
+    while curr.next is not None:
+        curr = curr.next
+    while curr is not None:
+        if curr.num_dst() > 0:
+            if curr.has_nbrs():
+                if curr.next is None:
+                    with nvtx.annotate("preload nfeat", color="red"):
+                        curr._load_nfeat(use_pin=use_pin)
+                with nvtx.annotate("preload efeat", color="red"):
+                    curr._load_efeat(use_pin=use_pin)
+        curr = curr.prev
+
+def preload0_uniqLoadFeat_noMailMem(blk: TBlock, use_pin=True):
+    '''
+    Prefetch data (e.g. features, memory, mails) needed by the TBlock 
+    and its subsequent blocks for computations.
+
+    :param blk:
+    :param use_pin: whether to pin memory
+    '''
+    curr = blk
+    while curr.next is not None:
+        curr = curr.next
+    while curr is not None:
+        if curr.num_dst() > 0:
+            if curr.has_nbrs():
+                if curr.next is None:
+                    with nvtx.annotate("preload nfeat", color="red"):
+                        curr._load_nfeat0_uniqLoadFeat(use_pin=use_pin)
+                with nvtx.annotate("preload efeat", color="red"):
+                    curr._load_efeat0_uniqLoadFeat(use_pin=use_pin)
+        curr = curr.prev
+
+def preload0_uniqLoadFeat(blk: TBlock, use_pin=True):
+    '''
+    Prefetch data (e.g. features, memory, mails) needed by the TBlock 
+    and its subsequent blocks for computations.
+
+    :param blk:
+    :param use_pin: whether to pin memory
+    '''
+    curr = blk
+    while curr.next is not None:
+        curr = curr.next
+    while curr is not None:
+        if curr.num_dst() > 0:
+            if curr.next is None:
+                with nvtx.annotate("preload mail", color="red"):
+                    curr._load_mail(use_pin=use_pin)
+                with nvtx.annotate("preload mem_data", color="red"):
+                    curr._load_mem_data(use_pin=use_pin)
+            if curr.has_nbrs():
+                if curr.next is None:
+                    with nvtx.annotate("preload nfeat", color="red"):
+                        curr._load_nfeat0_uniqLoadFeat(use_pin=use_pin)
+                with nvtx.annotate("preload efeat", color="red"):
+                    curr._load_efeat0_uniqLoadFeat(use_pin=use_pin)
+        curr = curr.prev
+
 def preload(blk: TBlock, use_pin=True):
     '''
     Prefetch data (e.g. features, memory, mails) needed by the TBlock 

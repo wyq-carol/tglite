@@ -245,15 +245,16 @@ class LinkPredTrainer(object):
 
             for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
                 # test with nsys WYQ TODO
-                print(f"Batch {self.batch_num}")
-                self.batch_num += 1
-                if (self.batch_num > 5 and tglite.config.ON_HETER): # TODO
-                    tt.t_batch_num_5 = tt.elapsed(t_loop)
-                    tt.print_batch_num_5()
-                    prefix='  '
-                    print(f"{prefix}batch5 | max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
-                    print(f"{prefix}batch5 | cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
-                    exit()
+                if (False and tglite.config.ON_HETER): # TODO
+                    print(f"Batch {self.batch_num}")
+                    self.batch_num += 1
+                    if (self.batch_num > 5):
+                        tt.t_batch_num_5 = tt.elapsed(t_loop)
+                        tt.print_batch_num_5()
+                        prefix='  '
+                        print(f"{prefix}batch5 | max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
+                        print(f"{prefix}batch5 | cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
+                        exit()
 
                 t_start = tt.start()
                 batch.neg_nodes = self.neg_sampler(len(batch))

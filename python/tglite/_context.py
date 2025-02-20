@@ -137,6 +137,7 @@ class TContext(object):
         :return: Pinned buffer.
         :rtype: Tensor
         """
+        # 两层有个cache优化 # TODO
         if layer not in cache:
             shape = tuple([rows] + dims)
             pin = torch.zeros(shape, pin_memory=True)
