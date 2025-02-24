@@ -379,7 +379,7 @@ class TBlock(object):
                     self._check_has_nbrs()
             with nvtx.annotate("blk.apply fn", color="red"):
                 output = fn(self)
-            with nvtx.annotate("blk.apply run_hooks", color="green"):
+            with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                 if run_hooks:
                     output = self.run_hooks(output)
                 return output

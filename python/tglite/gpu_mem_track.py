@@ -21,6 +21,7 @@ samples = []
 
 def add_samples(item):
     samples.append(item)
+    # print(f"show {len(samples[0][0])}")
 
 def get_samples(log_dir, log_name):
     file_path = os.path.join(log_dir, f"samples_{log_name}.pt")
@@ -66,8 +67,8 @@ def draw_node_centric_skew(log_dir, log_name):
         nodes = list(node_count.keys())
         counts = list(node_count.values())
 
-        print(f"nodes {nodes}")
-        print(f"counts {counts}")
+        # print(f"nodes {nodes}")
+        # print(f"counts {counts}")
 
         # 绘制散点图
         plt.figure(figsize=(10, 6))

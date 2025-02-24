@@ -302,6 +302,39 @@ def dedup(blk: TBlock) -> TBlock:
             blk.register_hook(_DedupInvertHook(inv_idx))
     return blk
 
+def dedup_statistic(blk: TBlock) -> TBlock:
+    '''
+    Applies the deduplication optimization to the TBlock 
+    by rewriting the destination nodes.
+
+    :param blk:
+    '''
+    if blk.num_dst() == 0:
+        return blk
+    nodes = blk._dstnodes
+    times = blk._dsttimes
+    has_dups, nodes, times, inv_idx = _c.dedup_targets(nodes, times)
+    if has_dups:
+        blk._replace_dst(nodes, times)
+        # print("register-hook _DedupInvertHook")
+        with nvtx.annotate("register-hook _DedupInvertHook", color="red"):
+            blk.register_hook(_DedupInvertHook(inv_idx))
+    return blk, inv_idx
+
+def dedup1_offlineSample(blk: TBlock, inv_idx) -> TBlock:
+    '''
+    Applies the deduplication optimization to the TBlock 
+    by rewriting the destination nodes.
+
+    :param blk:
+    '''
+    if blk.num_dst() == 0:
+        return blk
+    # print("register-hook _DedupInvertHook")
+    with nvtx.annotate("register-hook _DedupInvertHook", color="red"):
+        blk.register_hook(_DedupInvertHook(inv_idx))
+    return blk
+
 
 class _DedupInvertHook(object):
     def __init__(self, inv_idx: np.ndarray):

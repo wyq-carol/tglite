@@ -13,7 +13,7 @@ from tglite.mymodule import *
 import time
 import nvtx
 import tglite.config
-
+from tglite._block import TBlock
 
 class TGN(nn.Module):
     def __init__(self, ctx: tg.TContext,
@@ -42,12 +42,17 @@ class TGN(nn.Module):
         self.sampler = sampler
         self.edge_predictor = support.EdgePredictor(dim=dim_embed)
         self.dedup = dedup
+
+        self.is_train = True
+        self._new_samples = None
         # wyq add record uniq-nbrs
         self.dstnodes2latestNbrs = torch.zeros([tglite.config.num_nodes, 2], dtype=torch.long) # 可以用int # TODO **去冗余重建_mailbox**
 
     def forward(self, batch: tg.TBatch) -> Tensor:
         if tglite.config.ON_HETER:
             return self.forward0(batch)
+        elif tglite.config.OFFLINE_SAMPLE and self.is_train:
+            return self.forward1_offlineSample(batch) # TODO
         else:
             return self.forward_origin(batch)
 
@@ -521,6 +526,107 @@ class TGN(nn.Module):
             batch.g.mailbox.store(uniq, mail, mail_ts)
 
 
+    def _load_new_samples(self):
+        if self._new_samples is None:
+            file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
+            self._new_samples = torch.load(file_path)
+
+    def forward1_offlineSample(self, batch: tg.TBatch) -> Tensor:
+        # print(f"batch {batch._b_id}")
+        with nvtx.annotate("forward", color="purple"):
+        #     # setup message passing
+            # with nvtx.annotate("dedup and cache", color="purple"):
+            #     head = batch.block(self.ctx)
+            #     for i in range(self.num_layers):
+            #         tail = head if i == 0 \
+            #             else tail.next_block(include_dst=True, use_dst_times=False)
+            #         tail = tg.op.dedup(tail) if self.dedup else tail
+            #         with nvtx.annotate("sample", color="purple"):
+            #             tail = self.sampler.sample(tail)
+            # # head._dsttimes = torch.randn([head._dstnodes.shape[0]]).numpy()
+            # # print(f"head._dstnodes {head._dstnodes.shape}")
+            # # print(f"head._dstindex {head._dstindex.shape}")
+
+            # # offline sample
+            with nvtx.annotate("offline sample", color="purple"):
+                # TODO
+                #  TBlock def __init__(self, ctx: 'TContext', layer: int, dstnodes: np.ndarray, dsttimes: np.ndarray,
+                #  dstindex: np.ndarray = None, srcnodes: np.ndarray = None,
+                #  eid: np.ndarray = None, ets: np.ndarray = None):
+                _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                _eids_pre, _nids_pre, _eids_nxt, _nids_nxt = self._new_samples[batch._b_id]
+            #     print(f"b_dstnodes {b_dstnodes.size()}")
+            #     print(f"b_dstindex {b_dstindex.size()}")
+            #     print(f"b_srcnodes {b_srcnodes.size()}")
+            #     print(f"b_eids {b_eids.size()}")
+            #     print(f"b_ets {b_ets.size()}")
+            #     print("*****")
+            #     print(f"unique_eids {unique_eids.size()}")
+            #     print(f"_reverse_eids {_reverse_eids.size()}")
+            #     print(f"_unique_nids {_unique_nids.size()}")
+            #     print(f"_reverse_nids {_reverse_nids.size()}")
+            #     print(f"_unique_ets {_unique_ets.size()}")
+            #     print(f"_reverse_ets {_reverse_ets.size()}")
+            #     print("*****")
+            #     print(f"_eids_pre {_eids_pre.size()}")
+            #     print(f"_eids_nxt {_eids_nxt.size()}")
+            #     print(f"_nids_pre {_nids_pre.size()}")
+            #     print(f"_nids_nxt {_nids_nxt.size()}")
+            #     print()
+                # TODO samples add dsttimes & TODO add two-layer offline
+                head = TBlock(self.ctx, 0, b_dstnodes.numpy(), b_dsttimes.numpy(), b_dstindex.numpy(), b_srcnodes.numpy(), b_eids.numpy(), b_ets.numpy())
+                for i in range(self.num_layers):
+                    tail = head if i == 0 \
+                    else tail.next_block(include_dst=True, use_dst_times=False) # TODO 好像不需要add two-layer offline
+                    tg.op.dedup1_offlineSample(tail, _inv_idx) # TODO _reverse_eids 不对 这里是找回bs*3的映射
+
+
+            # load data / feats
+            with nvtx.annotate("preload data/feat", color="purple"):
+                tg.op.preload(head, use_pin=True)
+            if tail.num_dst() > 0:
+                # t_start = tt.start()
+                with nvtx.annotate("update mem", color="purple"):
+                    mem = self.update_memory(tail, batch)
+                # tt.t_update_memory += tt.elapsed(t_start)
+                nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
+                # torch.cuda.empty_cache()
+                tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+                tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                # tt.t_mem_update += tt.elapsed(t_start)
+                del nfeat
+                del mem
+
+            # compute embeddings
+            with nvtx.annotate("op aggr", color="purple"):
+                # torch.cuda.empty_cache() # del 的变量占用的空间?不会立即释放
+                embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
+            del head
+            del tail
+
+            # compute scores
+            with nvtx.annotate("compute score", color="purple"):
+                # torch.cuda.empty_cache()
+                src, dst, neg = batch.split_data(embeds)
+                scores = self.edge_predictor(src, dst) # TODO 这里有冗余吗? 16000->18000 而且src是不是算了两遍
+                # torch.cuda.empty_cache()
+                if neg is not None:
+                    scores = (scores, self.edge_predictor(src, neg)) # 可以这里再转回来? TODO compute score总共430μs 空间有限
+            del embeds
+            del src
+            del dst
+            del neg
+
+            # memory messages
+            t_start = tt.start()
+            with nvtx.annotate("save raw msgs", color="purple"):
+                self.save_raw_msgs(batch)
+            tt.t_post_update += tt.elapsed(t_start)
+
+            return scores
+
+
     def forward_origin(self, batch: tg.TBatch) -> Tensor:
         with nvtx.annotate("forward", color="purple"):
             # setup message passing
@@ -531,14 +637,19 @@ class TGN(nn.Module):
                 for i in range(self.num_layers):
                     tail = head if i == 0 \
                         else tail.next_block(include_dst=True, use_dst_times=False)
-                    tail = tg.op.dedup(tail) if self.dedup else tail
-                    with nvtx.annotate("sample", color="purple"):
-                        tail = self.sampler.sample(tail)
                     if tglite.config.ON_STATISTIC:
+                        tail, inv_idx = tg.op.dedup_statistic(tail) if self.dedup else tail
+                        with nvtx.annotate("sample", color="purple"):
+                            tail = self.sampler.sample(tail) # 先去重再采样
                         # 1. 统计热节点
                         node_centric_skew(tail._dstnodes, tail._srcnodes)
                         # 2. 将采样完整offload 出去 WYQ_TODO: 保存一整个sample文件
-                        add_samples((tail._dstnodes, tail._dstindex, tail._srcnodes, tail._eid, tail._ets))
+                        add_samples((inv_idx, tail._dstnodes, tail._dsttimes, tail._dstindex, tail._srcnodes, tail._eid, tail._ets))
+                    else: 
+                        tail = tg.op.dedup(tail) if self.dedup else tail
+                        with nvtx.annotate("sample", color="purple"):
+                            tail = self.sampler.sample(tail) # 先去重再采样
+                        
 
             # load data / feats
             with nvtx.annotate("preload data/feat", color="purple"):

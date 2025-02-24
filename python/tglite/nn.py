@@ -144,7 +144,7 @@ class TemporalAttnLayer(torch.nn.Module):
                 tt.t_time_nbrs += tt.elapsed(t_start)
                 t_start = tt.start()
             
-            with nvtx.annotate("redundancy-mul", color="red"):
+            with nvtx.annotate("redundancy-mul", color="red"): # TODO 这段的执行时间确实长
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                 Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)

@@ -17,7 +17,7 @@ class TBatch(object):
     materializing any arrays until they are needed.
     """
 
-    def __init__(self, g: 'TGraph', range: Tuple[int, int]):
+    def __init__(self, b_id, g: 'TGraph', range: Tuple[int, int]):
         """
         Internal constructor for creating a TBatch.
 
@@ -28,6 +28,7 @@ class TBatch(object):
         self._beg_idx = range[0]
         self._end_idx = range[1]
         self._neg_nodes = None
+        self._b_id = b_id
 
     def __len__(self) -> int:
         """Returns the total number of edges in the batch."""

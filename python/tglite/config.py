@@ -1,6 +1,7 @@
 ALL_ON_GPU = None
 ON_HETER = None
 ON_STATISTIC = None
+OFFLINE_SAMPLE = None
 log_name = None
 log_dir = None
 

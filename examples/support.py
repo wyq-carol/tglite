@@ -245,7 +245,9 @@ class LinkPredTrainer(object):
 
             for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
                 # test with nsys WYQ TODO
-                if (False and tglite.config.ON_HETER): # TODO
+                # if (True and tglite.config.ON_HETER): # TODO
+                # if (True): # TODO
+                if (False): # TODO
                     print(f"Batch {self.batch_num}")
                     self.batch_num += 1
                     if (self.batch_num > 5):
@@ -326,6 +328,7 @@ class LinkPredTrainer(object):
         for batch in tg.iter_edges(self.g, size=self.bsize, start=start_idx, end=end_idx):
             size = len(batch)
             batch.neg_nodes = self.neg_sampler(size)
+            self.model.is_train = False
             prob_pos, prob_neg = self.model(batch)
             prob_pos = prob_pos.cpu()
             prob_neg = prob_neg.cpu()

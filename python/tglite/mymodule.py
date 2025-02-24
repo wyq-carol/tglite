@@ -1,6 +1,7 @@
 import torch
 import math
 from tglite.gpu_mem_track import *
+import nvtx
 
 class LinearFunction_HandleZeroInput(torch.autograd.Function):
     @staticmethod
@@ -46,7 +47,11 @@ class LinearHandleZeroInput(torch.nn.Module):
         else:
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-            ans =  torch.nn.functional.linear(input.unsqueeze(-1), self.weight, self.bias)
+            
+            # print(f"input {input.unsqueeze(-1).size()}")
+            # print(f"weight {self.weight.size()}")
+            with nvtx.annotate("TODO m*1*1*n", color="green"):
+                ans =  torch.nn.functional.linear(input.unsqueeze(-1), self.weight, self.bias)
             return ans
 
 from torch.nn.modules import Module
