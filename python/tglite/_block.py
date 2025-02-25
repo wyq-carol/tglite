@@ -469,6 +469,42 @@ class TBlock(object):
         tt.t_prep_input += tt.elapsed(t_start)
         return data
     
+    def _load_efeat0_uniqLoadFeat_alreadyOnGPU(self, _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True):
+        """Loads the edge features to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_efeat0_uniqLoadFeat_alreadyOnGPU", color="red"):
+            # print(f"in _load_efeat0_uniqLoadFeat self._eid.device {torch.tensor(self._eid).device}") # TODO 联合采样将_eid转为tensor GPU上应该会更快，目前on CPU
+            unique_eid, inverse_indices = torch.unique(torch.tensor(self._eid), return_inverse=True)
+            if self._c_efeat is None and self._g.efeat is not None:
+                self._c_efeat = self._load_feat0_uniqLoadFeat(
+                    self._g.efeat, unique_eid, use_pin,
+                    self._ctx._get_efeat_pin)[inverse_indices] # TODO 可以不在这重建
+
+    def _load_nfeat0_uniqLoadFeat_alreadyOnGPU(self, _unique_nids, _reverse_nids, _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, _nids_nxt, _idx_nids_nxt, use_pin=True):
+        """Loads the node features to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_nfeat0_uniqLoadFeat_alreadyOnGPU", color="red"):
+            # print(f"in _load_nfeat0_uniqLoadFeat self.allnodes().device {self.allnodes().device}") # TODO 联合采样将_nid转为tensor GPU上应该会更快，目前on CPU
+            with nvtx.annotate("torch.unique", color="red"):
+                unique_allnodes, inverse_indices = torch.unique(self.allnodes().to("cuda"), return_inverse=True)
+            # _unique_nids = _unique_nids.to(unique_allnodes.dtype)
+            # assert torch.allclose(unique_allnodes, _unique_nids)
+            # assert torch.allclose(inverse_indices, _reverse_nids)
+            if self._c_nfeat is None and self._g.nfeat is not None:
+                # TODO 需要额外解决read amplification
+                with nvtx.annotate("_block _load_feat0_uniqLoadFeat", color="red"):
+                    cpu_nfeat = self._load_feat0_uniqLoadFeat(
+                        self._g.nfeat, _nids_cpu, use_pin,
+                        self._ctx._get_nfeat_pin) # TODO 可以不在这重建
+                # 构成完整本轮batch使用的nfeat
+                self._c_nfeat = torch.empty((unique_allnodes.shape[0], cpu_nfeat.shape[1]), device="cuda")
+                self._c_nfeat[_idx_nids_cpu] = cpu_nfeat
+                if _idx_nids_pre.shape[0] != 0:
+                    self._c_nfeat[_idx_nids_pre] = self._ctx._pre_nxt_nfeat
+                # 下个batch会用到的nfeat
+                self._ctx._pre_nxt_nfeat = self._c_nfeat[_idx_nids_nxt]
+                self._c_nfeat = self._c_nfeat[inverse_indices]
+
     def _load_efeat0_uniqLoadFeat(self, use_pin=True):
         """Loads the edge features to the TGraph's computation device."""
         # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
@@ -480,7 +516,6 @@ class TBlock(object):
                     self._g.efeat, unique_eid, use_pin,
                     self._ctx._get_efeat_pin)[inverse_indices] # TODO 可以不在这重建
 
-    
     def _load_nfeat0_uniqLoadFeat(self, use_pin=True):
         """Loads the node features to the TGraph's computation device."""
         # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
@@ -507,7 +542,8 @@ class TBlock(object):
         t_start = tt.start()
         cdev = self._g.compute_device()
         pin = pin_getter(self.layer, len(idx), feat.shape[1])
-        torch.index_select(feat, 0, idx, out=pin)
+        with nvtx.annotate("index_select", color="red"):
+            torch.index_select(feat, 0, idx, out=pin)
         data = pin.to(cdev, non_blocking=True)
         tt.t_prep_input += tt.elapsed(t_start)
         return data

@@ -39,6 +39,10 @@ class TContext(object):
         self._time_window = int(1e4)
         self._time_tables = {}
 
+        # batch redundancy
+        self._pre_nxt_efeat = torch.tensor([], device="cuda")
+        self._pre_nxt_nfeat = torch.tensor([], device="cuda")
+
     @property
     def graph(self) -> 'TGraph':
         """Returns the TGraph it associated with."""

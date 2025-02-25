@@ -36,10 +36,11 @@ if __name__ == "__main__":
     parser.add_argument('--opt-time', action='store_true', help='enable precomputing time encodings')
     parser.add_argument('--time-window', type=str, default=1e4, help='time window to precompute (default: 1e4)')
     parser.add_argument('--opt-all', action='store_true', help='enable all available optimizations')
-    parser.add_argument('--all-on-gpu', type=int, default=1, help='is node memory all-on-gpu')
+    parser.add_argument('--all-on-gpu', type=int, default=0, help='is node memory all-on-gpu')
     parser.add_argument('--on-heter', type=int, default=0, help='is node memory heterogeneous-aware')
     parser.add_argument('--offline-sample', type=int, default=0, help='using offline sample')
     parser.add_argument('--on-statistic', type=int, default=0, help='is statistic on')
+    parser.add_argument('--perf-ceil', type=int, default=0, help='using perf ceil')
     args = parser.parse_args()
     print(args)
 
@@ -69,7 +70,8 @@ if __name__ == "__main__":
     tglite.config.ON_HETER = int(args.on_heter)
     tglite.config.ON_STATISTIC = int(args.on_statistic)
     tglite.config.OFFLINE_SAMPLE = int(args.offline_sample)
-    print(f"ON_HETER {tglite.config.ON_HETER}, OFFLINE_SAMPLE {tglite.config.OFFLINE_SAMPLE}, ON_STATISTIC {tglite.config.ON_STATISTIC}, ALL_ON_GPU {tglite.config.ALL_ON_GPU}")
+    tglite.config.PERF_CEIL = int(args.perf_ceil)
+    print(f"ON_HETER {tglite.config.ON_HETER}, OFFLINE_SAMPLE {tglite.config.OFFLINE_SAMPLE}, PERF_CEIL {tglite.config.PERF_CEIL}, ON_STATISTIC {tglite.config.ON_STATISTIC}, ALL_ON_GPU {tglite.config.ALL_ON_GPU}")
     tglite.config.log_name = f"DATA_{DATA}_BS_{BATCH_SIZE}_NLAYER_{N_LAYERS}_NBR_{N_NBRS}_NHEAD_{N_HEADS}"
     tglite.config.log_dir = f"/home/volume/tglake_res/"
 
@@ -77,7 +79,17 @@ if __name__ == "__main__":
 
     g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
 
-    if tglite.config.ON_HETER:
+    if tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
+        support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu
+        dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
+        dim_nfeat = g.nfeat.shape[1]
+
+        g.set_compute(device)
+
+        g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat) # mailbox, mem on cpu
+        g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
+
+    elif tglite.config.ON_HETER:
         support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu
         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
@@ -174,6 +186,8 @@ if __name__ == "__main__":
         num_heads=N_HEADS,
         dropout=DROPOUT)
     model = model.to(device)
+    if tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
+        model._load_new_samples()
     if tglite.config.OFFLINE_SAMPLE:
         model._load_new_samples()
     

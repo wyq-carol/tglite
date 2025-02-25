@@ -18,6 +18,9 @@ class Mailbox(object):
         if size > 1:
             self._next = torch.zeros(num_nodes, dtype=torch.long, device=self._device)
 
+        self._mail_uniq_bids = torch.full((num_nodes, 1), -1) # mailbox 的uniq，对应的bids，初始化为-1
+        self._mail_nbrs_bids = torch.full((num_nodes, 2), -1) # mailbox 的nbrs，对应的nids和bids，初始化为-1
+
     @property
     def mail(self) -> Tensor:
         return self._mail
@@ -37,7 +40,10 @@ class Mailbox(object):
         self._mail.zero_()
         self._time.zero_()
 
-    def store(self, nids: Union[np.ndarray, Tensor], mail: Tensor, mail_ts: Tensor):
+    def get_nids_bids(self, unique_nodes):
+        return self._mail_uniq_bids[unique_nodes], self._mail_nbrs_bids[unique_nodes] # 应该是两列的rounds
+
+    def store(self, nids: Union[np.ndarray, Tensor], mail: Tensor, mail_ts: Tensor, uniq=None, nbrs=None, bid=None):
         if not isinstance(nids, Tensor):
             nids = torch.from_numpy(nids).long()
         nids = nids.to(self._device)
@@ -51,6 +57,15 @@ class Mailbox(object):
             self._mail[nids, pos] = mail
             self._time[nids, pos] = mail_ts
             self._next[nids] = torch.remainder(pos + 1, self._size)
+
+        if bid != None:
+            # uniq
+            self._mail_uniq_bids[uniq] = bid
+            # nbrs
+            # 取第1列
+            self._mail_nbrs_bids[uniq, :1] = nbrs.unsqueeze(1)
+            # 取第2列
+            self._mail_nbrs_bids[uniq, 1:] = bid
 
     def move_to(self, device, **kwargs):
         if device is None or self._device == device:

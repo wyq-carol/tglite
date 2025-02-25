@@ -29,6 +29,8 @@ class Memory(object):
             raise TError('memory data dimension mismatch')
         if self._time.shape[0] != num_nodes:
             raise TError('memory timestamp dimension mismatch')
+        
+        self._mem_bids = torch.full((num_nodes, 1), -1) # mem 只有一列，且只需要记录最新轮次，初始化为-1
 
     def __len__(self) -> int:
         """
@@ -71,13 +73,19 @@ class Memory(object):
         self._data.zero_()
         self._time.zero_()
 
-    def update(self, nids: Union[np.ndarray, Tensor], newdata: Tensor, newtime: Tensor):
+    def get_nids_bids(self, unique_nodes):
+        return self._mem_bids[unique_nodes]
+    
+    def update(self, nids: Union[np.ndarray, Tensor], newdata: Tensor, newtime: Tensor, bid=None):
         if not isinstance(nids, Tensor):
             nids = torch.from_numpy(nids).long()
         # print(self._device)
         nids = nids.to(self._device)
         self._data[nids] = newdata.detach().to(self._device)
         self._time[nids] = newtime.detach().to(self._device)
+        
+        if bid != None:
+            self._mem_bids[nids] = bid # TODO 可以
 
     def move_to(self, device, **kwargs):
         if device is None or self._device == device:

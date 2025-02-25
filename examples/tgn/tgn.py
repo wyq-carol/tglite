@@ -49,12 +49,15 @@ class TGN(nn.Module):
         self.dstnodes2latestNbrs = torch.zeros([tglite.config.num_nodes, 2], dtype=torch.long) # 可以用int # TODO **去冗余重建_mailbox**
 
     def forward(self, batch: tg.TBatch) -> Tensor:
-        if tglite.config.ON_HETER:
+        if tglite.config.PERF_CEIL and self.is_train:
+            return self.forward2_perfCeil(batch) # TODO
+        elif tglite.config.ON_HETER:
             return self.forward0(batch)
         elif tglite.config.OFFLINE_SAMPLE and self.is_train:
-            return self.forward1_offlineSample(batch) # TODO
+            return self.forward1_offlineSample(batch)
         else:
             return self.forward_origin(batch)
+
 
 
     def forward0(self, batch: tg.TBatch) -> Tensor:
@@ -124,7 +127,6 @@ class TGN(nn.Module):
                 # self.save_raw_msgs0_no_redundant_memUpd(batch)
             return scores
         
-    
     ## well_optimized_memUpd
     def well_optimized_memUpd(self, head: tg.TBlock, blk: tg.TBlock, batch:tg.TBatch) -> Tensor:
         # load data / feats
@@ -526,13 +528,14 @@ class TGN(nn.Module):
             batch.g.mailbox.store(uniq, mail, mail_ts)
 
 
+
     def _load_new_samples(self):
         if self._new_samples is None:
             file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
             self._new_samples = torch.load(file_path)
 
     def forward1_offlineSample(self, batch: tg.TBatch) -> Tensor:
-        # print(f"batch {batch._b_id}")
+        print(f"batch {batch._b_id}")
         with nvtx.annotate("forward", color="purple"):
         #     # setup message passing
             # with nvtx.annotate("dedup and cache", color="purple"):
@@ -554,8 +557,13 @@ class TGN(nn.Module):
                 #  dstindex: np.ndarray = None, srcnodes: np.ndarray = None,
                 #  eid: np.ndarray = None, ets: np.ndarray = None):
                 _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                prev_eids, next_eids, \
+                prev_nodes, next_nodes, \
                 unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
-                _eids_pre, _nids_pre, _eids_nxt, _nids_nxt = self._new_samples[batch._b_id]
+                _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+                _eids_nxt, _idx_eids_nxt, \
+                _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+                _nids_nxt, _idx_nids_nxt = self._new_samples[batch._b_id]
             #     print(f"b_dstnodes {b_dstnodes.size()}")
             #     print(f"b_dstindex {b_dstindex.size()}")
             #     print(f"b_srcnodes {b_srcnodes.size()}")
@@ -625,6 +633,237 @@ class TGN(nn.Module):
             tt.t_post_update += tt.elapsed(t_start)
 
             return scores
+
+
+
+    def save_raw_msgs2_perfCeil(self, batch: tg.TBatch):
+        sdev = batch.g.storage_device()
+        mem = batch.g.mem.data
+
+        with nvtx.annotate("save raw msgs-block_adj", color="red"):
+            # 由于new blk 我肯定load了很多没用的东西
+            blk = batch.block_adj(self.ctx)
+        with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
+            blk = tg.op.coalesce(blk, by='latest')
+
+        with nvtx.annotate("save raw msgs-uniq nbrs", color="red"):
+            # 写回数据量实际很小 μs级别
+            uniq = torch.from_numpy(blk.dstnodes).long().to(sdev)
+            nbrs = torch.from_numpy(blk.srcnodes).long().to(sdev)
+            
+            # TODO **去冗余重建_mailbox**
+            # self.dstnodes2latestNbrs[uniq, 0] = nbrs
+            if self.dim_edge > 0:
+                eids = torch.from_numpy(blk.eid).long().to(sdev)
+                # self.dstnodes2latestNbrs[uniq, 1] = eids
+                mail = torch.cat([mem[uniq], mem[nbrs], batch.g.efeat[eids]], dim=1)
+            else:
+                mail = torch.cat([mem[uniq], mem[nbrs]], dim=1)
+            mail_ts = torch.from_numpy(blk.ets).to(sdev)
+        with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
+            batch.g.mailbox.store(uniq, mail, mail_ts, uniq, nbrs, batch._b_id)
+
+    # no_redundant_memUpd + uniqLoadFeat_memUpd: node feat and edge feat
+    def update_memory2_no_redundant_memUpd(self, head: tg.TBlock, blk: tg.TBlock, batch:tg.TBatch) -> Tensor:
+        # load data / feats
+        with nvtx.annotate("preload data/feat", color="purple"):
+            tg.op.preload0_uniqLoadFeat_noMailMem(head, use_pin=True)
+
+        with nvtx.annotate("preload mem/mailbox", color="purple"):
+            cdev = blk.g.compute_device()
+            nodes = blk.allnodes()
+            unique_nodes, inverse_indices = torch.unique(nodes, return_inverse=True)
+            unique_mail_ts = blk.g.mailbox.time[unique_nodes]
+            delta = unique_mail_ts - blk.g.mem.time[unique_nodes]
+            mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to(cdev))
+            mem = blk._g.mem._data[unique_nodes].to(cdev)
+            mail = torch.cat([blk._g.mailbox.mail[unique_nodes].to(cdev), mail_delta], dim=1)
+        # TODO 不要load 完整的blk._g.mailbox.mail[unique_nodes]
+        # 将blk._g.mem._data[unique_nodes] 和 blk._g.mailbox.mail[unique_nodes] 组成一个新张量TMP 和索引表 传输到GPU 上
+        # 根据TMP 和索引重建mail 和 mem
+
+        # YOUR_CODE HERE
+
+        # # 测试正确性
+        # assert torch.allclose(mail, YOUR_mail)
+
+        # # 统计YOUR_mail 相比于mail 少load 了多少；注意控制显存峰值
+        with nvtx.annotate("nn.GRUCell", color="purple"):
+            mem = self.mem_cell(mail, mem)
+        with nvtx.annotate("blk.g.mem.update", color="purple"):
+            blk.g.mem.update(unique_nodes, mem, unique_mail_ts)
+
+        return mem[inverse_indices]
+
+    def forward2_perfCeil(self, batch: tg.TBatch) -> Tensor:
+        # print(f"batch {batch._b_id}")
+        # 先集成优化，再节约已经GPU上的load feat
+        with nvtx.annotate("forward", color="purple"):
+            # # offline sample
+            with nvtx.annotate("offline sample", color="purple"):
+                # TODO
+                #  TBlock def __init__(self, ctx: 'TContext', layer: int, dstnodes: np.ndarray, dsttimes: np.ndarray,
+                #  dstindex: np.ndarray = None, srcnodes: np.ndarray = None,
+                #  eid: np.ndarray = None, ets: np.ndarray = None):
+                _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                prev_eids, next_eids, \
+                prev_nodes, next_nodes, \
+                unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+                _eids_nxt, _idx_eids_nxt, \
+                _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+                _nids_nxt, _idx_nids_nxt = self._new_samples[batch._b_id]
+                '''
+                # new_sample = (
+                #     b_inv_idx,
+                #     b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets,
+                #     prev_eids, next_eids,
+                #     prev_nodes, next_nodes,
+                #     _unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets,
+                #     _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu,
+                #     _eids_nxt, _idx_eids_nxt,
+                #     _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu,
+                #     _nids_nxt, _idx_nids_nxt
+                # )
+                print(f"b_dstnodes {b_dstnodes.size()}")
+                print(f"b_dstindex {b_dstindex.size()}")
+                print(f"b_srcnodes {b_srcnodes.size()}")
+                print(f"b_eids {b_eids.size()}")
+                print(f"b_ets {b_ets.size()}")
+                print("*****")
+                print(f"unique_eids {unique_eids.size()}")
+                print(f"_reverse_eids {_reverse_eids.size()}")
+                print(f"_unique_nids {_unique_nids.size()}")
+                print(f"_reverse_nids {_reverse_nids.size()}")
+                print(f"_unique_ets {_unique_ets.size()}")
+                print(f"_reverse_ets {_reverse_ets.size()}")
+                print("*****")
+                print(f"_eids_pre {_eids_pre.size()}")
+                print(f"_eids_nxt {_eids_nxt.size()}")
+                print(f"_nids_pre {_nids_pre.size()}")
+                print(f"_nids_nxt {_nids_nxt.size()}")
+                print()
+                '''
+
+                # TODO add two-layer offline
+                head = TBlock(self.ctx, 0, b_dstnodes.numpy(), b_dsttimes.numpy(), b_dstindex.numpy(), b_srcnodes.numpy(), b_eids.numpy(), b_ets.numpy())
+                for i in range(self.num_layers):
+                    tail = head if i == 0 \
+                    else tail.next_block(include_dst=True, use_dst_times=False) # TODO 好像不需要add two-layer offline
+                    tg.op.dedup1_offlineSample(tail, _inv_idx) 
+
+            # # load data / feats
+            # with nvtx.annotate("preload data/feat", color="purple"):
+            #     tg.op.preload(head, use_pin=True)
+            # if tail.num_dst() > 0:
+            #     # t_start = tt.start()
+            #     with nvtx.annotate("update mem", color="purple"):
+                    mem = self.update_memory(tail, batch)
+            # 消融一下
+            with nvtx.annotate("update mem", color="purple"):
+                with nvtx.annotate("preload data/feat", color="purple"):
+                    # tg.op.preload0_uniqLoadFeat_noMailMem(head, use_pin=True)
+                    # _eids_pre, _nids_pre, _eids_nxt, _nids_nxt
+                    curr = head
+                    while curr.next is not None:
+                        curr = curr.next
+                    while curr is not None:
+                        if curr.num_dst() > 0:
+                            if curr.has_nbrs():
+                                if curr.next is None:
+                                    with nvtx.annotate("preload nfeat", color="red"):
+                                        curr._load_nfeat0_uniqLoadFeat_alreadyOnGPU(_unique_nids, _reverse_nids, _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, _nids_nxt, _idx_nids_nxt, use_pin=True)
+                                with nvtx.annotate("preload efeat", color="red"):
+                                    # TODO refine efeat alike nfeat
+                                    curr._load_efeat0_uniqLoadFeat_alreadyOnGPU(_eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True)
+                        curr = curr.prev
+
+            if tail.num_dst() > 0:
+                # 用现有方法和冗余性观察降低显存和时间的bottleneck
+                # load data / feats
+                with nvtx.annotate("preload data/mem,mailbox", color="purple"):
+                    cdev = tail.g.compute_device()
+                    nodes = tail.allnodes()
+                    unique_nodes, inverse_indices = torch.unique(nodes, return_inverse=True)
+                    
+                    '''
+                    mem_bids = tail.g.mem.get_nids_bids(unique_nodes)
+                    mailbox_uniq_bids, mailbox_nbrs_bids = tail.g.mailbox.get_nids_bids(unique_nodes)
+                    def calculate_total_redundancy_ratio(unique_nodes, mem_bids, mailbox_uniq_bids, mailbox_nbrs_bids):
+                        # 拼接 unique_nodes 和 mem_bids
+                        combined_mem_bids = torch.cat((unique_nodes.unsqueeze(1), mem_bids), dim=1)
+                        # 拼接 unique_nodes 和 mailbox_uniq_bids
+                        combined_mailbox_uniq_bids = torch.cat((unique_nodes.unsqueeze(1), mailbox_uniq_bids), dim=1)
+
+                        # 合并三组张量
+                        all_combined = torch.cat((combined_mem_bids, combined_mailbox_uniq_bids, mailbox_nbrs_bids), dim=0)
+
+                        # 合并前的总行数
+                        total_rows_before = combined_mem_bids.size(0) + combined_mailbox_uniq_bids.size(0) + mailbox_nbrs_bids.size(0)
+
+                        # 对合并后的张量进行去重
+                        unique_combined = torch.unique(all_combined, dim=0)
+                        total_rows_after = unique_combined.size(0)
+
+                        # 计算冗余比例
+                        redundancy_ratio = (total_rows_before - total_rows_after) / total_rows_before
+                        print(f"    mem/mailbox redundancy_ratio {redundancy_ratio}")
+                        return redundancy_ratio
+                    calculate_total_redundancy_ratio(unique_nodes, mem_bids, mailbox_uniq_bids, mailbox_nbrs_bids)
+                    '''
+
+                    unique_mail_ts = tail.g.mailbox.time[unique_nodes]
+                    delta = unique_mail_ts - tail.g.mem.time[unique_nodes]
+                    mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to(cdev))
+                    mem = tail._g.mem._data[unique_nodes].to(cdev)
+                    mail = torch.cat([tail._g.mailbox.mail[unique_nodes].to(cdev), mail_delta], dim=1)
+                # TODO 不要load 完整的blk._g.mailbox.mail[unique_nodes]
+                # 将blk._g.mem._data[unique_nodes] 和 blk._g.mailbox.mail[unique_nodes] 组成一个新张量TMP 和索引表 传输到GPU 上
+                # 根据TMP 和索引重建mail 和 mem
+
+                # YOUR_CODE HERE
+
+                # # 测试正确性
+                # assert torch.allclose(mail, YOUR_mail)
+
+                # # 统计YOUR_mail 相比于mail 少load 了多少；注意控制显存峰值
+                with nvtx.annotate("nn.GRUCell", color="purple"):
+                    mem = self.mem_cell(mail, mem)
+                with nvtx.annotate("blk.g.mem.update", color="purple"):
+                    # tail.g.mem.update(unique_nodes, mem, unique_mail_ts, batch._b_id) # TODO UNDO for statistic
+                    tail.g.mem.update(unique_nodes, mem, unique_mail_ts)
+
+                mem = mem[inverse_indices]
+
+            nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
+            tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+            tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+            del nfeat
+            del mem
+
+            # compute embeddings
+            with nvtx.annotate("op aggr", color="purple"):
+                embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
+            del head
+            del tail
+
+            # compute scores
+            with nvtx.annotate("compute score", color="purple"):
+                src, dst, neg = batch.split_data(embeds)
+                scores = self.edge_predictor(src, dst)
+                if neg is not None:
+                    scores = (scores, self.edge_predictor(src, neg))
+            del embeds
+            del src
+            del dst
+            del neg
+            with nvtx.annotate("save raw msgs", color="purple"):
+                # self.save_raw_msgs2_perfCeil(batch) # TODO UNDO for statistic
+                self.save_raw_msgs(batch)
+                ## no_redundant_memUpd
+                # self.save_raw_msgs0_no_redundant_memUpd(batch)
+            return scores
+
 
 
     def forward_origin(self, batch: tg.TBatch) -> Tensor:

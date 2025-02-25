@@ -31,6 +31,52 @@ def remove_duplicate_eids(dstindex, eids):
 
     return keep_indices
 
+import torch
+
+def get_common_and_non_common_eids(_unique_eids, prev_eids, device):
+    _unique_eids = torch.tensor(_unique_eids, device=device)
+    prev_eids = torch.tensor(prev_eids, device=device)
+
+    # 计算公共 eid 及其索引
+    mask_common = torch.isin(_unique_eids, prev_eids)
+    common_eids_tensor = _unique_eids[mask_common]
+    common_eid_indices_tensor = torch.nonzero(mask_common).flatten()
+
+    # 计算非公共 eid 及其索引
+    mask_non_common = ~mask_common
+    non_common_eids_tensor = _unique_eids[mask_non_common]
+    non_common_eid_indices_tensor = torch.nonzero(mask_non_common).flatten()
+
+    # 计算公共 eid 在上一个 batch 中的索引
+    common_eid_prev_indices = []
+    for eid in common_eids_tensor.cpu().tolist():
+        prev_index = (prev_eids == eid).nonzero(as_tuple=True)[0].item()
+        common_eid_prev_indices.append(prev_index)
+    # common_eid_prev_indices_tensor = torch.tensor(common_eid_prev_indices, device=device)
+
+    return common_eids_tensor, common_eid_indices_tensor, non_common_eids_tensor, non_common_eid_indices_tensor
+    # return _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu
+
+import torch
+
+def get_common_and_non_common_eids2(_unique_eids, prev_eids, device):
+    # 将输入转换为 PyTorch 张量
+    _unique_eids = torch.tensor(_unique_eids, device=device)
+    prev_eids = torch.tensor(prev_eids, device=device)
+
+    # 使用 torch.isin 函数找出公共元素的掩码
+    common_mask = torch.isin(_unique_eids, prev_eids)
+
+    # 根据掩码提取公共元素
+    common_eids_tensor = _unique_eids[common_mask]
+
+    # 找出公共元素在 _unique_eids 中的索引
+    common_eid_indices_tensor = torch.nonzero(common_mask, as_tuple=True)[0]
+
+    return common_eids_tensor, common_eid_indices_tensor
+    # return _nids_nxt, _idx_nids_nxt
+
+
 
 if __name__ == "__main__":
     # 检查是否有可用的 GPU
@@ -107,50 +153,104 @@ if __name__ == "__main__":
 
             # 2.3. 为每个mini batch 的数据结构增加 与上一个/下一个batch 重叠的 _eids_pre, _eids_nxt, _nids_pre, _nids_nxt
             if b_i == 0:
+                prev_eids = torch.tensor([], device=device)
+                prev_nodes = torch.tensor([], device=device)
+
                 _eids_pre = torch.tensor([], device=device)
                 _nids_pre = torch.tensor([], device=device)
-            else:
-                prev_eids = torch.tensor(_eids[b_i - 1]).to(device)
-                _eids_pre = torch.tensor([eid for eid in _unique_eids if eid in prev_eids], device=device)
 
-                prev_nodes = torch.cat([torch.tensor(_dstnodes[b_i - 1]).to(device), torch.tensor(_srcnodes[b_i - 1]).to(device)])
-                _nids_pre = torch.tensor([nid for nid in _unique_nids if nid in prev_nodes], device=device)
+                _idx_eids_pre = torch.tensor([]).to(device)
+                _idx_nids_pre = torch.tensor([]).to(device)
+
+                _eids_cpu = _unique_eids
+                _idx_eids_cpu = torch.arange(len(_unique_eids))
+                _nids_cpu = _unique_nids
+                _idx_nids_cpu = torch.arange(len(_unique_nids))
+            else:
+                prev_eids = torch.unique(torch.tensor(_eids[b_i - 1]).to(device))
+                _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu = get_common_and_non_common_eids(_unique_eids, prev_eids, device)
+
+                prev_nodes = torch.unique(torch.cat([torch.tensor(_dstnodes[b_i - 1]).to(device), torch.tensor(_srcnodes[b_i - 1]).to(device)]))
+                # import pdb;pdb.set_trace()
+                _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu = get_common_and_non_common_eids(_unique_nids, prev_nodes, device)
 
             if b_i == len(_dstnodes) - 1:
                 _eids_nxt = torch.tensor([], device=device)
                 _nids_nxt = torch.tensor([], device=device)
-            else:
-                next_eids = torch.tensor(_eids[b_i + 1]).to(device)
-                _eids_nxt = torch.tensor([eid for eid in _unique_eids if eid in next_eids], device=device)
 
-                next_nodes = torch.cat([torch.tensor(_dstnodes[b_i + 1]).to(device), torch.tensor(_srcnodes[b_i + 1]).to(device)])
-                _nids_nxt = torch.tensor([nid for nid in _unique_nids if nid in next_nodes], device=device)
+                next_eids = torch.tensor([]).to(device)
+                next_nodes = torch.tensor([]).to(device)
+
+                _idx_eids_nxt = torch.tensor([]).to(device)
+                _idx_nids_nxt = torch.tensor([]).to(device)
+
+            else:
+                next_eids = torch.unique(torch.tensor(_eids[b_i + 1]).to(device))
+                _eids_nxt, _idx_eids_nxt = get_common_and_non_common_eids2(_unique_eids, next_eids, device)
+
+                next_nodes = torch.unique(torch.cat([torch.tensor(_dstnodes[b_i + 1]).to(device), torch.tensor(_srcnodes[b_i + 1]).to(device)]))
+                _nids_nxt, _idx_nids_nxt = get_common_and_non_common_eids2(_unique_nids, next_nodes, device)
 
             edge_load_percents.append((_unique_eids.shape[0] - _eids_pre.shape[0]) * 100 / _reverse_eids.shape[0])
             node_load_percents.append((_unique_nids.shape[0] - _nids_pre.shape[0]) * 100 / _reverse_nids.shape[0])
 
-            # print(f"b_inv_idx {len(b_inv_idx)}")
-            # print(f"b_dstnodes {len(b_dstnodes)}")
-            # print(f"b_dsttimes {len(b_dsttimes)}")
-            # print(f"b_dstindex {len(b_dstindex)}")
-            # print(f"b_srcnodes {len(b_srcnodes)}")
-            # print(f"b_eids {len(b_eids)}")
-            # print(f"b_ets {len(b_ets)}")
-            # print(f"_unique_eids {len(_unique_eids)}")
-            # print(f"_reverse_eids {len(_reverse_eids)}")
-            # print(f"_unique_nids {len(_unique_nids)}")
-            # print(f"_reverse_nids {len(_reverse_nids)}")
-            # print(f"_unique_ets {len(_unique_ets)}")
-            # print(f"_reverse_ets {len(_reverse_ets)}")
-            # print(f"_eids_pre {len(_eids_pre)}")
-            # print(f"_nids_pre {len(_nids_pre)}")
-            # print(f"_eids_nxt {len(_eids_nxt)}")
-            # print(f"_nids_nxt {len(_nids_nxt)}")
+            '''
+            print(f"b_inv_idx {len(b_inv_idx)}")
+            print(f"b_dstnodes {len(b_dstnodes)}")
+            print(f"b_dsttimes {len(b_dsttimes)}")
+            print(f"b_dstindex {len(b_dstindex)}")
+            print(f"b_srcnodes {len(b_srcnodes)}")
+            print(f"b_eids {len(b_eids)}")
+            print(f"b_ets {len(b_ets)}")
+            print(f"_unique_eids {len(_unique_eids)}")
+            print(f"_reverse_eids {len(_reverse_eids)}")
+            print(f"_unique_nids {len(_unique_nids)}")
+            print(f"_reverse_nids {len(_reverse_nids)}")
+            print(f"_unique_ets {len(_unique_ets)}")
+            print(f"_reverse_ets {len(_reverse_ets)}")
+            print(f"_eids_pre {len(_eids_pre)}")
+            print(f"_nids_pre {len(_nids_pre)}")
+            print(f"_eids_nxt {len(_eids_nxt)}")
+            print(f"_nids_nxt {len(_nids_nxt)}")
+            '''
+            '''
+            print(f"b_i {b_i}")
+            print(f"***")
+            print(f"prev_eids {len(prev_eids)}")
+            print(f"prev_nodes {len(prev_nodes)}")
+            print(f"b_dstnodes {len(b_dstnodes)}")
+            print(f"b_srcnodes {len(b_srcnodes)}")
+            print(f"b_eids {len(b_eids)}")
+            print(f"next_eids {len(next_eids)}")
+            print(f"next_nodes {len(next_nodes)}")
+            print(f"***")
+            print(f"_eids_pre {_eids_pre}")
+            print(f"_idx_eids_pre {_idx_eids_pre}")
+            print(f"_eids_cpu {_eids_cpu}")
+            print(f"_idx_eids_cpu {_idx_eids_cpu}")
+            print(f"_eids_nxt {_eids_nxt}")
+            print(f"_idx_eids_nxt {_idx_eids_nxt}")
+            print(f"***")
+            print(f"_nids_pre {_nids_pre}")
+            print(f"_idx_nids_pre {_idx_nids_pre}")
+            print(f"_nids_cpu {_nids_cpu}")
+            print(f"_idx_nids_cpu {_idx_nids_cpu}")
+            print(f"_nids_nxt {_nids_nxt}")
+            print(f"_idx_nids_nxt {_idx_nids_nxt}")
+            print()
+            assert len(_idx_eids_pre)+len(_idx_eids_cpu) == len(_unique_eids)
+            assert len(_idx_nids_pre)+len(_idx_nids_cpu) == len(_unique_nids)
+            '''
             new_sample = (
                 b_inv_idx,
                 b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets,
+                prev_eids, next_eids,
+                prev_nodes, next_nodes,
                 _unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets,
-                _eids_pre, _nids_pre, _eids_nxt, _nids_nxt
+                _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu,
+                _eids_nxt, _idx_eids_nxt,
+                _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu,
+                _nids_nxt, _idx_nids_nxt
             )
             new_samples.append(new_sample)
 
@@ -164,4 +264,4 @@ if __name__ == "__main__":
             new_samples_cpu.append(new_sample_cpu)
 
         # 你可以在这里对 new_samples 进行进一步处理，比如保存到文件
-        # torch.save(new_samples_cpu, os.path.join(log_dir, f"new_samples_{log_name}.pt"))
+        torch.save(new_samples_cpu, os.path.join(log_dir, f"new_samples_{log_name}.pt"))
