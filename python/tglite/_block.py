@@ -474,11 +474,28 @@ class TBlock(object):
         # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
         with nvtx.annotate("_block _load_efeat0_uniqLoadFeat_alreadyOnGPU", color="red"):
             # print(f"in _load_efeat0_uniqLoadFeat self._eid.device {torch.tensor(self._eid).device}") # TODO 联合采样将_eid转为tensor GPU上应该会更快，目前on CPU
-            unique_eid, inverse_indices = torch.unique(torch.tensor(self._eid), return_inverse=True)
+            with nvtx.annotate("torch.unique", color="red"):
+                unique_eid, inverse_indices = torch.unique(torch.tensor(self._eid).to("cuda"), return_inverse=True)
             if self._c_efeat is None and self._g.efeat is not None:
-                self._c_efeat = self._load_feat0_uniqLoadFeat(
-                    self._g.efeat, unique_eid, use_pin,
-                    self._ctx._get_efeat_pin)[inverse_indices] # TODO 可以不在这重建
+                with nvtx.annotate("_block _load_feat0_uniqLoadEFeat", color="red"):
+                    # TODO 需要额外解决read amplification
+                    with nvtx.annotate("_block _load_feat0_uniqLoadNFeat", color="red"):
+                        cpu_efeat = self._load_feat0_uniqLoadEFeat2(
+                            self._g.efeat, _eids_cpu, use_pin,
+                            self._ctx._get_efeat_pin) # TODO 可以不在这重建
+                    # 构成完整本轮batch使用的efeat
+                    self._c_efeat = torch.empty((unique_eid.shape[0], cpu_efeat.shape[1]), device="cuda")
+                    self._c_efeat[_idx_eids_cpu] = cpu_efeat
+                    if _idx_eids_pre.shape[0] != 0:
+                        self._c_efeat[_idx_eids_pre] = self._ctx._pre_nxt_efeat # 意为preload nxt batch efeat
+                    # 下个batch会用到的efeat
+                    self._ctx._pre_nxt_efeat = self._c_efeat[_idx_eids_nxt]
+                    self._c_efeat = self._c_efeat[inverse_indices]
+
+                    # efeat = self._load_feat0_uniqLoadFeat(
+                    #     self._g.efeat, unique_eid.to("cpu"), use_pin,
+                    #     self._ctx._get_efeat_pin)[inverse_indices] # TODO 可以不在这重建
+                    # assert torch.allclose(efeat, self._c_efeat) # \O/ test success!
 
     def _load_nfeat0_uniqLoadFeat_alreadyOnGPU(self, _unique_nids, _reverse_nids, _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, _nids_nxt, _idx_nids_nxt, use_pin=True):
         """Loads the node features to the TGraph's computation device."""
@@ -492,8 +509,8 @@ class TBlock(object):
             # assert torch.allclose(inverse_indices, _reverse_nids)
             if self._c_nfeat is None and self._g.nfeat is not None:
                 # TODO 需要额外解决read amplification
-                with nvtx.annotate("_block _load_feat0_uniqLoadFeat", color="red"):
-                    cpu_nfeat = self._load_feat0_uniqLoadFeat2(
+                with nvtx.annotate("_block _load_feat0_uniqLoadNFeat", color="red"):
+                    cpu_nfeat = self._load_feat0_uniqLoadNFeat2(
                         self._g.nfeat, _nids_cpu, use_pin,
                         self._ctx._get_nfeat_pin) # TODO 可以不在这重建
                 # 构成完整本轮batch使用的nfeat
@@ -528,7 +545,7 @@ class TBlock(object):
                     self._ctx._get_nfeat_pin)[inverse_indices] # TODO 可以不在这重建
     
     # preload0_uniqLoadFeat2
-    def _load_feat0_uniqLoadFeat2(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
+    def _load_feat0_uniqLoadNFeat2(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
         """Loads selected feature data from the TGraph's storage device to computation device.
 
         :param Tensor feat: Feature tensor.
@@ -549,6 +566,24 @@ class TBlock(object):
         tt.t_prep_input += tt.elapsed(t_start)
         return data
     
+    # preload0_uniqLoadFeat2
+    def _load_feat0_uniqLoadEFeat2(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
+        """Loads selected feature data from the TGraph's storage device to computation device.
+
+        :param Tensor feat: Feature tensor.
+        :param np.ndarray idx: The indices of selected features.
+        :param bool use_pin: Whether to use pinned memory, only applicable when the storage device is cpu and the computation device.
+        is cuda.
+        :param Callable pin_getter: Function to get the pinned buffer.
+        :return: A tensor containing the loaded feature data.
+        """
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        t_start = tt.start()
+        cdev = self._g.compute_device()
+        data = self._ctx._nxt_efeat_pins.to(cdev, non_blocking=True)
+        tt.t_prep_input += tt.elapsed(t_start)
+        return data
+    
     # preload0_uniqLoadFeat
     def _load_feat0_uniqLoadFeat(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
         """Loads selected feature data from the TGraph's storage device to computation device.
@@ -563,7 +598,8 @@ class TBlock(object):
         # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
         t_start = tt.start()
         cdev = self._g.compute_device()
-        pin = pin_getter(self.layer, len(idx), feat.shape[1])
+        with nvtx.annotate("pin_getter", color="red"):
+            pin = pin_getter(self.layer, len(idx), feat.shape[1])
         with nvtx.annotate("index_select", color="red"):
             torch.index_select(feat, 0, idx, out=pin)
         data = pin.to(cdev, non_blocking=True)

@@ -291,15 +291,18 @@ class LinkPredTrainer(object):
                     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
                     if tglite.config.PERF_CEIL: # TODO only TGN
-                        def preloading(self, _nids_cpu):
-                            # 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
-                            # self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
+                        def preloading(self, _nids_cpu, _eids_cpu):
+                            # preload nfeat
+                            ## 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
+                            ## self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
                             self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
                             with nvtx.annotate("index_select", color="red"):
                                 torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._nxt_nfeat_pins)
-                            # print(f"self.ctx._nxt_nfeat_pins {self.ctx._nxt_nfeat_pins}")
-                            # self.ctx._nxt_efeat_pins = torch.ones([1])
-                            # TODO
+                            
+                            # preload efeat
+                            self.ctx._nxt_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
+                            torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._nxt_efeat_pins)
+                        
                         # 提前取下一个batch add preload logic TODO
                         with nvtx.annotate("threading preload nxt", color="purple"):
                             if self.model.sampling_thread is not None:
@@ -315,7 +318,7 @@ class LinkPredTrainer(object):
                             _nids_nxt, _idx_nids_nxt = self.model.next_data
 
                             # Sampling for next batch
-                            self.ctx.preload_thread = threading.Thread(target=preloading, args=(self, _nids_cpu,))
+                            self.ctx.preload_thread = threading.Thread(target=preloading, args=(self, _nids_cpu, _eids_cpu))
                             self.ctx.preload_thread.start()
 
                     loss.backward()

@@ -712,11 +712,16 @@ class TGN(nn.Module):
             _eids_nxt, _idx_eids_nxt, \
             _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
             _nids_nxt, _idx_nids_nxt = self.next_data
-            # 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
-            # self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
+            # preload nfeat
+            ## 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
+            ## self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
             self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
             with nvtx.annotate("index_select", color="red"):
                 torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._nxt_nfeat_pins)
+            # preload efeat
+            self.ctx._nxt_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
+            with nvtx.annotate("index_select", color="red"):
+                torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._nxt_efeat_pins)
     
     def forward2_perfCeil(self, batch: tg.TBatch) -> Tensor:
         def sampling(self, _b_id):
@@ -828,7 +833,8 @@ class TGN(nn.Module):
                 with nvtx.annotate("preload data/mem,mailbox", color="purple"):
                     cdev = tail.g.compute_device()
                     nodes = tail.allnodes()
-                    unique_nodes, inverse_indices = torch.unique(nodes, return_inverse=True)
+                    with nvtx.annotate("unique", color="red"):
+                        unique_nodes, inverse_indices = torch.unique(nodes, return_inverse=True)
                     
                     '''
                     mem_bids = tail.g.mem.get_nids_bids(unique_nodes)
