@@ -4,6 +4,7 @@ import tglite as tg
 from torch import nn, Tensor
 from tglite.nn import TemporalAttnLayer
 from tglite._stats import tt
+import threading
 
 import sys, os
 sys.path.append(os.path.join(os.getcwd(), '..')) 
@@ -45,6 +46,8 @@ class TGN(nn.Module):
 
         self.is_train = True
         self._new_samples = None
+        self.sampling_thread = None
+        self.next_data = None
         # wyq add record uniq-nbrs
         self.dstnodes2latestNbrs = torch.zeros([tglite.config.num_nodes, 2], dtype=torch.long) # 可以用int # TODO **去冗余重建_mailbox**
 
@@ -533,6 +536,7 @@ class TGN(nn.Module):
         if self._new_samples is None:
             file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
             self._new_samples = torch.load(file_path)
+            self.next_data = self._new_samples[0]
 
     def forward1_offlineSample(self, batch: tg.TBatch) -> Tensor:
         print(f"batch {batch._b_id}")
@@ -695,16 +699,33 @@ class TGN(nn.Module):
 
         return mem[inverse_indices]
 
+    
+    
     def forward2_perfCeil(self, batch: tg.TBatch) -> Tensor:
+        def sampling(self, _b_id):
+            # _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+            # prev_eids, next_eids, \
+            # prev_nodes, next_nodes, \
+            # unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+            # _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+            # _eids_nxt, _idx_eids_nxt, \
+            # _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+            # _nids_nxt, _idx_nids_nxt = self._new_samples[_b_id]
+            with nvtx.annotate("thread sampling", color="purple"):
+                if _b_id > len(self._new_samples):
+                    self.next_data = None
+                self.next_data = self._new_samples[_b_id]
+
         # print(f"batch {batch._b_id}")
+
         # 先集成优化，再节约已经GPU上的load feat
         with nvtx.annotate("forward", color="purple"):
-            # # offline sample
-            with nvtx.annotate("offline sample", color="purple"):
-                # TODO
-                #  TBlock def __init__(self, ctx: 'TContext', layer: int, dstnodes: np.ndarray, dsttimes: np.ndarray,
-                #  dstindex: np.ndarray = None, srcnodes: np.ndarray = None,
-                #  eid: np.ndarray = None, ets: np.ndarray = None):
+
+            # 提前取下一个batch & TODO add preload logic
+            with nvtx.annotate("thread sampling nxt", color="purple"):
+                if self.sampling_thread is not None:
+                    self.sampling_thread.join()
+
                 _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
                 prev_eids, next_eids, \
                 prev_nodes, next_nodes, \
@@ -712,7 +733,19 @@ class TGN(nn.Module):
                 _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
                 _eids_nxt, _idx_eids_nxt, \
                 _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
-                _nids_nxt, _idx_nids_nxt = self._new_samples[batch._b_id]
+                _nids_nxt, _idx_nids_nxt = self.next_data
+
+                # Sampling for next batch
+                sampling_thread = threading.Thread(target=sampling, args=(self, batch._b_id + 1,))
+                sampling_thread.start()
+
+            # # offline sample
+            with nvtx.annotate("offline sample", color="purple"):
+                # TODO
+                #  TBlock def __init__(self, ctx: 'TContext', layer: int, dstnodes: np.ndarray, dsttimes: np.ndarray,
+                #  dstindex: np.ndarray = None, srcnodes: np.ndarray = None,
+                #  eid: np.ndarray = None, ets: np.ndarray = None):
+                
                 '''
                 # new_sample = (
                 #     b_inv_idx,
@@ -746,11 +779,13 @@ class TGN(nn.Module):
                 '''
 
                 # TODO add two-layer offline
-                head = TBlock(self.ctx, 0, b_dstnodes.numpy(), b_dsttimes.numpy(), b_dstindex.numpy(), b_srcnodes.numpy(), b_eids.numpy(), b_ets.numpy())
-                for i in range(self.num_layers):
-                    tail = head if i == 0 \
-                    else tail.next_block(include_dst=True, use_dst_times=False) # TODO 好像不需要add two-layer offline
-                    tg.op.dedup1_offlineSample(tail, _inv_idx) 
+                with nvtx.annotate("offline sample-TBlock", color="purple"):
+                    head = TBlock(self.ctx, 0, b_dstnodes.numpy(), b_dsttimes.numpy(), b_dstindex.numpy(), b_srcnodes.numpy(), b_eids.numpy(), b_ets.numpy())
+                with nvtx.annotate("dedup1 offline sample", color="purple"):
+                    for i in range(self.num_layers):
+                        tail = head if i == 0 \
+                        else tail.next_block(include_dst=True, use_dst_times=False) # TODO 好像不需要add two-layer offline
+                        tg.op.dedup1_offlineSample(tail, _inv_idx) 
 
             # # load data / feats
             # with nvtx.annotate("preload data/feat", color="purple"):
@@ -758,7 +793,7 @@ class TGN(nn.Module):
             # if tail.num_dst() > 0:
             #     # t_start = tt.start()
             #     with nvtx.annotate("update mem", color="purple"):
-                    mem = self.update_memory(tail, batch)
+            #        mem = self.update_memory(tail, batch)
             # 消融一下
             with nvtx.annotate("update mem", color="purple"):
                 with nvtx.annotate("preload data/feat", color="purple"):
