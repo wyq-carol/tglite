@@ -14,6 +14,7 @@ from tglite._stats import tt
 from tglite.gpu_mem_track import *
 import nvtx
 import tglite.config
+import threading
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -288,6 +289,35 @@ class LinkPredTrainer(object):
                     epoch_loss += float(loss)
                 with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
                     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+
+                    if tglite.config.PERF_CEIL: # TODO only TGN
+                        def preloading(self, _nids_cpu):
+                            # 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
+                            # self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
+                            self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
+                            with nvtx.annotate("index_select", color="red"):
+                                torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._nxt_nfeat_pins)
+                            # print(f"self.ctx._nxt_nfeat_pins {self.ctx._nxt_nfeat_pins}")
+                            # self.ctx._nxt_efeat_pins = torch.ones([1])
+                            # TODO
+                        # 提前取下一个batch add preload logic TODO
+                        with nvtx.annotate("threading preload nxt", color="purple"):
+                            if self.model.sampling_thread is not None:
+                                self.model.sampling_thread.join()
+
+                            _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                            prev_eids, next_eids, \
+                            prev_nodes, next_nodes, \
+                            unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                            _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+                            _eids_nxt, _idx_eids_nxt, \
+                            _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+                            _nids_nxt, _idx_nids_nxt = self.model.next_data
+
+                            # Sampling for next batch
+                            self.ctx.preload_thread = threading.Thread(target=preloading, args=(self, _nids_cpu,))
+                            self.ctx.preload_thread.start()
+
                     loss.backward()
                     # torch.cuda.empty_cache()
                     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)

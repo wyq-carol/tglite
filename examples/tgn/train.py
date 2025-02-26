@@ -187,7 +187,7 @@ if __name__ == "__main__":
         dropout=DROPOUT)
     model = model.to(device)
     if tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
-        model._load_new_samples()
+        model._load_new_samples2()
     if tglite.config.OFFLINE_SAMPLE:
         model._load_new_samples()
     

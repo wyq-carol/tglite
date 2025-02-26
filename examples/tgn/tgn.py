@@ -699,7 +699,24 @@ class TGN(nn.Module):
 
         return mem[inverse_indices]
 
-    
+    def _load_new_samples2(self):
+        if self._new_samples is None:
+            file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
+            self._new_samples = torch.load(file_path)
+            self.next_data = self._new_samples[0]
+            _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+            prev_eids, next_eids, \
+            prev_nodes, next_nodes, \
+            unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+            _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+            _eids_nxt, _idx_eids_nxt, \
+            _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+            _nids_nxt, _idx_nids_nxt = self.next_data
+            # 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
+            # self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
+            self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
+            with nvtx.annotate("index_select", color="red"):
+                torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._nxt_nfeat_pins)
     
     def forward2_perfCeil(self, batch: tg.TBatch) -> Tensor:
         def sampling(self, _b_id):
@@ -723,9 +740,6 @@ class TGN(nn.Module):
 
             # 提前取下一个batch & TODO add preload logic
             with nvtx.annotate("thread sampling nxt", color="purple"):
-                if self.sampling_thread is not None:
-                    self.sampling_thread.join()
-
                 _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
                 prev_eids, next_eids, \
                 prev_nodes, next_nodes, \
@@ -787,16 +801,11 @@ class TGN(nn.Module):
                         else tail.next_block(include_dst=True, use_dst_times=False) # TODO 好像不需要add two-layer offline
                         tg.op.dedup1_offlineSample(tail, _inv_idx) 
 
-            # # load data / feats
-            # with nvtx.annotate("preload data/feat", color="purple"):
-            #     tg.op.preload(head, use_pin=True)
-            # if tail.num_dst() > 0:
-            #     # t_start = tt.start()
-            #     with nvtx.annotate("update mem", color="purple"):
-            #        mem = self.update_memory(tail, batch)
-            # 消融一下
             with nvtx.annotate("update mem", color="purple"):
                 with nvtx.annotate("preload data/feat", color="purple"):
+                    if self.ctx.preload_thread is not None:
+                        self.ctx.preload_thread.join()
+
                     # tg.op.preload0_uniqLoadFeat_noMailMem(head, use_pin=True)
                     # _eids_pre, _nids_pre, _eids_nxt, _nids_nxt
                     curr = head

@@ -42,6 +42,10 @@ class TContext(object):
         # batch redundancy
         self._pre_nxt_efeat = torch.tensor([], device="cuda")
         self._pre_nxt_nfeat = torch.tensor([], device="cuda")
+        # nxt pins
+        self.preload_thread = None
+        self._nxt_nfeat_pins = None
+        self._nxt_efeat_pins = None
 
     @property
     def graph(self) -> 'TGraph':

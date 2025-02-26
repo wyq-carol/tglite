@@ -493,7 +493,7 @@ class TBlock(object):
             if self._c_nfeat is None and self._g.nfeat is not None:
                 # TODO 需要额外解决read amplification
                 with nvtx.annotate("_block _load_feat0_uniqLoadFeat", color="red"):
-                    cpu_nfeat = self._load_feat0_uniqLoadFeat(
+                    cpu_nfeat = self._load_feat0_uniqLoadFeat2(
                         self._g.nfeat, _nids_cpu, use_pin,
                         self._ctx._get_nfeat_pin) # TODO 可以不在这重建
                 # 构成完整本轮batch使用的nfeat
@@ -526,6 +526,28 @@ class TBlock(object):
                 self._c_nfeat = self._load_feat0_uniqLoadFeat(
                     self._g.nfeat, unique_allnodes, use_pin,
                     self._ctx._get_nfeat_pin)[inverse_indices] # TODO 可以不在这重建
+    
+    # preload0_uniqLoadFeat2
+    def _load_feat0_uniqLoadFeat2(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
+        """Loads selected feature data from the TGraph's storage device to computation device.
+
+        :param Tensor feat: Feature tensor.
+        :param np.ndarray idx: The indices of selected features.
+        :param bool use_pin: Whether to use pinned memory, only applicable when the storage device is cpu and the computation device.
+        is cuda.
+        :param Callable pin_getter: Function to get the pinned buffer.
+        :return: A tensor containing the loaded feature data.
+        """
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        t_start = tt.start()
+        cdev = self._g.compute_device()
+        # pin = pin_getter(self.layer, len(idx), feat.shape[1])
+        # with nvtx.annotate("index_select", color="red"):
+        #     torch.index_select(feat, 0, idx, out=pin)
+        # data = pin.to(cdev, non_blocking=True)
+        data = self._ctx._nxt_nfeat_pins.to(cdev, non_blocking=True)
+        tt.t_prep_input += tt.elapsed(t_start)
+        return data
     
     # preload0_uniqLoadFeat
     def _load_feat0_uniqLoadFeat(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
