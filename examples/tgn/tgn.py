@@ -15,6 +15,7 @@ import time
 import nvtx
 import tglite.config
 from tglite._block import TBlock
+import copy
 
 class TGN(nn.Module):
     def __init__(self, ctx: tg.TContext,
@@ -58,6 +59,8 @@ class TGN(nn.Module):
             return self.forward0(batch)
         elif tglite.config.OFFLINE_SAMPLE and self.is_train:
             return self.forward1_offlineSample(batch)
+        elif tglite.config.PERF_CEIL_BASE and self.is_train:
+            return self.forward_origin_newBase(batch)
         else:
             return self.forward_origin(batch)
 
@@ -539,7 +542,7 @@ class TGN(nn.Module):
             self.next_data = self._new_samples[0]
 
     def forward1_offlineSample(self, batch: tg.TBatch) -> Tensor:
-        print(f"batch {batch._b_id}")
+        # print(f"batch {batch._b_id}")
         with nvtx.annotate("forward", color="purple"):
         #     # setup message passing
             # with nvtx.annotate("dedup and cache", color="purple"):
@@ -912,6 +915,97 @@ class TGN(nn.Module):
                 self.save_raw_msgs(batch)
                 ## no_redundant_memUpd
                 # self.save_raw_msgs0_no_redundant_memUpd(batch)
+            return scores
+
+
+
+    def _load_new_perfCeilBase(self, batch):
+        # print(f"_load_new_perfCeilBase batch {batch._b_id}")
+        if self.ctx.next_blk_tail is None:
+            head = batch.block(self.ctx)
+
+            for i in range(self.num_layers):
+                tail = head if i == 0 \
+                    else tail.next_block(include_dst=True, use_dst_times=False)
+                tail = tg.op.dedup(tail) if self.dedup else tail
+                with nvtx.annotate("sample", color="purple"):
+                    tail = self.sampler.sample(tail) # 先去重再采样
+                        
+            # load data / feats
+            with nvtx.annotate("preload data/feat", color="purple"):
+                tg.op.preload(head, use_pin=True)
+
+            self.ctx.next_blk_tail = tail
+            self.ctx.next_blk_head = head
+            self.ctx.next_mem = tail.mem_data()
+
+    def update_memory_newBase(self, blk: tg.TBlock, batch:tg.TBatch, mem) -> Tensor:
+        cdev = blk.g.compute_device()
+        nodes = blk.allnodes()
+
+        time_start_0 = tt.start()
+        mail_ts = blk.g.mailbox.time[nodes] # on cpu? no new segments
+        tt.tt_mail_ts_load += tt.elapsed(time_start_0)
+
+        delta = mail_ts - blk.g.mem.time[nodes]
+        delta = delta.squeeze().to(cdev)
+        with nvtx.annotate("update mem-precompute_times", color="purple"):
+            mail = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta) # on cpu
+        mail = torch.cat([blk.mail(), mail], dim=1) # no new segments 不等同于no request
+
+        # mem = blk.mem_data() # on cpu?
+        time_start_1 = tt.start()
+        with nvtx.annotate("update mem-mem_cell", color="purple"):
+            mem = self.mem_cell(mail, mem)
+        tt.t_mem_update_gru_cell += tt.elapsed(time_start_1)
+        time_start_2 = tt.start()
+        blk.g.mem.update(nodes, mem, mail_ts)
+        tt.t_mem_update_after += tt.elapsed(time_start_2)
+        return mem
+
+    def forward_origin_newBase(self, batch: tg.TBatch) -> Tensor:
+        with nvtx.annotate("forward", color="purple"):
+            # print(f"forward batch {batch._b_id} - len(batch) {len(batch)}")
+            # setup message passing
+            
+            tail = self.ctx.curr_blk_tail
+            head = self.ctx.curr_blk_head
+            mem = self.ctx.curr_mem
+
+            if tail.num_dst() > 0:
+                # t_start = tt.start()
+                with nvtx.annotate("update mem", color="purple"):
+                    mem = self.update_memory_newBase(tail, batch, mem)
+                nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
+                tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+                tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                del nfeat
+                del mem
+
+            # compute embeddings
+            with nvtx.annotate("op aggr", color="purple"):
+                embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
+            del head
+            del tail
+
+            # compute scores
+            with nvtx.annotate("compute score", color="purple"):
+                # print(f"batch {batch._b_id} embeds {embeds.shape}")
+                src, dst, neg = batch.split_data(embeds)
+                scores = self.edge_predictor(src, dst)
+                if neg is not None:
+                    scores = (scores, self.edge_predictor(src, neg))
+            del embeds
+            del src
+            del dst
+            del neg
+
+            # memory messages
+            t_start = tt.start()
+            with nvtx.annotate("save raw msgs", color="purple"):
+                self.save_raw_msgs(batch)
+            tt.t_post_update += tt.elapsed(t_start)
+
             return scores
 
 

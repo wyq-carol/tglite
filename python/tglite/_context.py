@@ -46,6 +46,14 @@ class TContext(object):
         self.preload_thread = None
         self._nxt_nfeat_pins = None
         self._nxt_efeat_pins = None
+        # perf ceil base
+        self.perfCeilBase_thread = None
+        self.next_blk_tail = None
+        self.next_blk_head = None
+        self.next_mem = None
+        self.curr_blk_tail = None
+        self.curr_blk_head = None
+        self.curr_mem = None
 
     @property
     def graph(self) -> 'TGraph':

@@ -41,6 +41,7 @@ if __name__ == "__main__":
     parser.add_argument('--offline-sample', type=int, default=0, help='using offline sample')
     parser.add_argument('--on-statistic', type=int, default=0, help='is statistic on')
     parser.add_argument('--perf-ceil', type=int, default=0, help='using perf ceil')
+    parser.add_argument('--perf-ceil-base', type=int, default=0, help='using perf ceil base')
     args = parser.parse_args()
     print(args)
 
@@ -71,7 +72,12 @@ if __name__ == "__main__":
     tglite.config.ON_STATISTIC = int(args.on_statistic)
     tglite.config.OFFLINE_SAMPLE = int(args.offline_sample)
     tglite.config.PERF_CEIL = int(args.perf_ceil)
-    print(f"ON_HETER {tglite.config.ON_HETER}, OFFLINE_SAMPLE {tglite.config.OFFLINE_SAMPLE}, PERF_CEIL {tglite.config.PERF_CEIL}, ON_STATISTIC {tglite.config.ON_STATISTIC}, ALL_ON_GPU {tglite.config.ALL_ON_GPU}")
+    tglite.config.PERF_CEIL_BASE = int(args.perf_ceil_base)
+    lines = f'' \
+            f'PERF_CEIL {tglite.config.PERF_CEIL}, PERF_CEIL_BASE {tglite.config.PERF_CEIL_BASE}\n' \
+            f'ON_HETER {tglite.config.ON_HETER}, OFFLINE_SAMPLE {tglite.config.OFFLINE_SAMPLE}\n' \
+            f'ON_STATISTIC {tglite.config.ON_STATISTIC}, ALL_ON_GPU {tglite.config.ALL_ON_GPU}\n'
+    print(lines, end='')
     tglite.config.log_name = f"DATA_{DATA}_BS_{BATCH_SIZE}_NLAYER_{N_LAYERS}_NBR_{N_NBRS}_NHEAD_{N_HEADS}"
     tglite.config.log_dir = f"/home/volume/tglake_res/"
 
