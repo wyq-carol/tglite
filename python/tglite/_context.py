@@ -44,8 +44,8 @@ class TContext(object):
         self._pre_nxt_nfeat = torch.tensor([], device="cuda")
         # nxt pins
         self.preload_thread = None
-        self._nxt_nfeat_pins = None
-        self._nxt_efeat_pins = None
+        self._cur_nfeat_pins = None
+        self._cur_efeat_pins = None
         # perf ceil base
         self.perfCeilBase_thread = None
         self.next_blk_tail = None

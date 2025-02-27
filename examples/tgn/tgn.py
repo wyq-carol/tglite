@@ -48,6 +48,7 @@ class TGN(nn.Module):
         self.is_train = True
         self._new_samples = None
         self.sampling_thread = None
+        self.curr_data = None
         self.next_data = None
         # wyq add record uniq-nbrs
         self.dstnodes2latestNbrs = torch.zeros([tglite.config.num_nodes, 2], dtype=torch.long) # 可以用int # TODO **去冗余重建_mailbox**
@@ -706,7 +707,7 @@ class TGN(nn.Module):
         if self._new_samples is None:
             file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
             self._new_samples = torch.load(file_path)
-            self.next_data = self._new_samples[0]
+            self.curr_data = self._new_samples[0]
             _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
             prev_eids, next_eids, \
             prev_nodes, next_nodes, \
@@ -714,17 +715,17 @@ class TGN(nn.Module):
             _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
             _eids_nxt, _idx_eids_nxt, \
             _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
-            _nids_nxt, _idx_nids_nxt = self.next_data
+            _nids_nxt, _idx_nids_nxt = self.curr_data
             # preload nfeat
             ## 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
             ## self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
-            self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
+            self.ctx._cur_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
             with nvtx.annotate("index_select", color="red"):
-                torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._nxt_nfeat_pins)
+                torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._cur_nfeat_pins)
             # preload efeat
-            self.ctx._nxt_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
+            self.ctx._cur_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
             with nvtx.annotate("index_select", color="red"):
-                torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._nxt_efeat_pins)
+                torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._cur_efeat_pins)
     
     def forward2_perfCeil(self, batch: tg.TBatch) -> Tensor:
         def sampling(self, _b_id):
@@ -748,6 +749,7 @@ class TGN(nn.Module):
 
             # 提前取下一个batch & TODO add preload logic
             with nvtx.annotate("thread sampling nxt", color="purple"):
+                assert self.curr_data is not None # 同步点在support.py 的preload
                 _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
                 prev_eids, next_eids, \
                 prev_nodes, next_nodes, \
@@ -755,11 +757,13 @@ class TGN(nn.Module):
                 _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
                 _eids_nxt, _idx_eids_nxt, \
                 _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
-                _nids_nxt, _idx_nids_nxt = self.next_data
+                _nids_nxt, _idx_nids_nxt = self.curr_data
+                self.curr_data = None
 
-                # Sampling for next batch
-                sampling_thread = threading.Thread(target=sampling, args=(self, batch._b_id + 1,))
-                sampling_thread.start()
+                # Sampling for next batch 每次只预取一个batch
+                assert self.next_data == None
+                self.sampling_thread = threading.Thread(target=sampling, args=(self, batch._b_id + 1,))
+                self.sampling_thread.start()
 
             # # offline sample
             with nvtx.annotate("offline sample", color="purple"):

@@ -562,7 +562,8 @@ class TBlock(object):
         # with nvtx.annotate("index_select", color="red"):
         #     torch.index_select(feat, 0, idx, out=pin)
         # data = pin.to(cdev, non_blocking=True)
-        data = self._ctx._nxt_nfeat_pins.to(cdev, non_blocking=True)
+        data = self._ctx._cur_nfeat_pins.to(cdev, non_blocking=True)
+        self._ctx._cur_nfeat_pins = None
         tt.t_prep_input += tt.elapsed(t_start)
         return data
     
@@ -580,7 +581,8 @@ class TBlock(object):
         # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
         t_start = tt.start()
         cdev = self._g.compute_device()
-        data = self._ctx._nxt_efeat_pins.to(cdev, non_blocking=True)
+        data = self._ctx._cur_efeat_pins.to(cdev, non_blocking=True)
+        self._ctx._cur_efeat_pins = None
         tt.t_prep_input += tt.elapsed(t_start)
         return data
     

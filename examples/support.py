@@ -284,18 +284,16 @@ class LinkPredTrainer(object):
 
                     self.optimizer.zero_grad()
 
-                    if tglite.config.PERF_CEIL_BASE and batch._b_id == 0:
-                        self.model._load_new_perfCeilBase(batch)
-                    elif tglite.config.PERF_CEIL_BASE: 
-                        assert self.ctx.perfCeilBase_thread is not None
-                        self.ctx.perfCeilBase_thread.join()
-
-                    if tglite.config.PERF_CEIL_BASE:
+                    if tglite.config.PERF_CEIL_BASE: # TODO only TGN
+                        if batch._b_id == 0:
+                            self.model._load_new_perfCeilBase(batch) # 在函数内还是改的next
+                        else: 
+                            assert self.ctx.perfCeilBase_thread is not None
+                            self.ctx.perfCeilBase_thread.join()
                         self.ctx.curr_blk_head = self.ctx.next_blk_head
                         self.ctx.curr_blk_tail = self.ctx.next_blk_tail
                         self.ctx.curr_mem = self.ctx.next_mem
-                        
-                    if tglite.config.PERF_CEIL_BASE: # TODO only TGN
+                    
                         def perfCeilBase_preloading(self, batch):
                             # print(f"preloading and sampling batch {batch._b_id} - len(batch) {len(batch)}")
                             head = batch.block(self.ctx)
@@ -349,31 +347,34 @@ class LinkPredTrainer(object):
                                 # preload nfeat
                                 ## 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
                                 ## self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
-                                self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
+                                self.ctx._cur_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
                                 with nvtx.annotate("index_select", color="red"):
-                                    torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._nxt_nfeat_pins)
+                                    torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._cur_nfeat_pins)
                                 
                                 # preload efeat
-                                self.ctx._nxt_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
-                                torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._nxt_efeat_pins)
+                                self.ctx._cur_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
+                                torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._cur_efeat_pins)
                             
                             # 提前取下一个batch add preload logic TODO
-                            with nvtx.annotate("threading preload nxt", color="purple"):
+                            with nvtx.annotate("threading preload nxt", color="purple"): # 取的是next batch
                                 if self.model.sampling_thread is not None:
                                     self.model.sampling_thread.join()
+                                    assert self.model.curr_data is None # 表示第一轮预采样/后来next batch 采样的结果已经被使用了
+                                    self.model.curr_data = self.model.next_data
+                                    self.model.next_data = None # 指示当前batch 可以开始下一轮预采样了
+                                    if self.model.curr_data is not None: # 如果还有下一个batch
+                                        _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                                        prev_eids, next_eids, \
+                                        prev_nodes, next_nodes, \
+                                        unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                                        _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+                                        _eids_nxt, _idx_eids_nxt, \
+                                        _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+                                        _nids_nxt, _idx_nids_nxt = self.model.curr_data
 
-                                _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
-                                prev_eids, next_eids, \
-                                prev_nodes, next_nodes, \
-                                unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
-                                _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
-                                _eids_nxt, _idx_eids_nxt, \
-                                _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
-                                _nids_nxt, _idx_nids_nxt = self.model.next_data
-
-                                # Sampling for next batch
-                                self.ctx.preload_thread = threading.Thread(target=preloading, args=(self, _nids_cpu, _eids_cpu))
-                                self.ctx.preload_thread.start()
+                                        # Sampling for curr batch(本质是在上一个batch 采样cur)
+                                        self.ctx.preload_thread = threading.Thread(target=preloading, args=(self, _nids_cpu, _eids_cpu))
+                                        self.ctx.preload_thread.start()
 
                         loss.backward()
                         # torch.cuda.empty_cache()
