@@ -520,7 +520,8 @@ class TBlock(object):
                     self._c_nfeat[_idx_nids_pre] = self._ctx._pre_nxt_nfeat
                 # 下个batch会用到的nfeat
                 self._ctx._pre_nxt_nfeat = self._c_nfeat[_idx_nids_nxt]
-                self._c_nfeat = self._c_nfeat[_reverse_nids] # 分别算出重建dstnodes的reverse_dst_nids和重建srcnodes的reverse_src_nids # 最后写statistic逻辑
+                # no scatter
+                # self._c_nfeat = self._c_nfeat[_reverse_nids] # 分别算出重建dstnodes的reverse_dst_nids和重建srcnodes的reverse_src_nids # 最后写statistic逻辑
 
     def _load_efeat0_uniqLoadFeat(self, use_pin=True):
         """Loads the edge features to the TGraph's computation device."""

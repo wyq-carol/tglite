@@ -373,7 +373,10 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         print(f"self.w_kv_node {self.w_kv_node}")
         print(f"self.w_kv_edge {self.w_kv_edge}")
         print(f"self.w_kv_time {self.w_kv_time}")'''
+        self.w_q_node = torch.nn.Linear(dim_node, dim_out)
+        self.w_q_time = torch.nn.Linear(dim_time, dim_out)
         self.w_kv_node = torch.nn.Linear(dim_node, dim_out * 2)
+        self.w_qkv_node = torch.nn.Linear(dim_node, dim_out * 3)
         self.w_kv_edge = torch.nn.Linear(dim_edge, dim_out * 2)
         self.w_kv_time = torch.nn.Linear(dim_time, dim_out * 2)
         self.w_out = torch.nn.Linear(dim_node + dim_out, dim_out)
@@ -383,7 +386,7 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
     
  
     # @torch.compile(dynamic=True)
-    def compute_z_ours(self, Q, idx, node_unique, node_inverse, efeat_unique, efeat_inverse, time_unique, time_inverse):
+    def compute_z_ours(self, idx, nodeData, node_inverse, node_dst_inverse, efeat_unique, efeat_inverse, time_unique, time_inverse, time_dst_unique, time_dst_inverse):
         # print(f"Q= {Q.shape}")
         # print(f"idx= {idx.shape}")
         # print(f"node_unique= {node_unique.shape}")
@@ -392,10 +395,21 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         # print(f"efeat_inverse= {efeat_inverse.shape}")
         # print(f"time_unique= {time_unique.shape}")
         # print(f"time_inverse= {time_inverse.shape}")
+        QKV_node = self.w_qkv_node(nodeData)
 
-        Q = self.w_q(Q)
+        # Q_node = self.w_q_node(nodeData)
+        Q_node = QKV_node[:, :self.dim_out]
+        Q_time = self.w_q_time(time_dst_unique)
+
+        Q_node = Q_node[node_dst_inverse]
+        Q_time = Q_time[time_dst_inverse]
+        Q_our = Q_node + Q_time
         
-        Z_node = self.w_kv_node(node_unique)
+        Q = Q_our[idx]
+
+
+        # Z_node = self.w_kv_node(nodeData)
+        Z_node = QKV_node[:, self.dim_out:]
         Z_edge = self.w_kv_edge(efeat_unique)
         Z_time = self.w_kv_time(time_unique)
         
@@ -407,7 +421,6 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         K = Z_our[:, :self.dim_out]
         V = Z_our[:, self.dim_out:]
         
-        Q = Q[idx]
 
         assert Q.shape[0] == K.shape[0]
 
@@ -499,36 +512,44 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         return attn, V
     
     # @torch.compile TODO
-    def forward_redundancy_mul(self, blk: TBlock): # TODO build pipeline
+    # input: tail, nodeData, _reverse_nids
+    def forward_redundancy_mul(self, blk: TBlock, nodeData, _reverse_nids): # TODO build pipeline
         # [DOING] 先拆分计算；纵切只要传入对应的indices范围即可
         # 处理bottleneck 的KV 部分
         with nvtx.annotate("precompute", color="blue"):
             zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
             nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
+
         # Q = edge_view(blk, Q) # 对Q进行scatter
         idx = torch.from_numpy(blk._dstindex)
         idx = idx.to(device="cuda", dtype=torch.long)
 
-        Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
         # 给具体可能的值 TODO
         with torch.no_grad():
-            # node_dst_unique, node_dst_inverse = torch.unique(blk.dstdata['h'], dim=0, return_inverse=True)
-            node_unique, node_inverse = torch.unique(blk.srcdata['h'], dim=0, return_inverse=True)
+            # node_unique, node_inverse = torch.unique(blk.srcdata['h'], dim=0, return_inverse=True)
             efeat_unique, efeat_inverse = torch.unique(blk.efeat(), dim=0, return_inverse=True) # 172的长度可能乘起来不够高效
             time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True)
+
+            # node_dst_unique, node_dst_inverse = torch.unique(blk.dstdata['h'], dim=0, return_inverse=True)
+            time_dst_unique, time_dst_inverse = torch.unique(zero_time_feat, dim=0, return_inverse=True)
+
             # print("===") # TODO dst的冗余也有很多
             # print(f"blk.dstdata['h'] {blk.dstdata['h'].shape}")
             # print(f"node_dst_unique {node_dst_unique.shape}")
             # print()
 
-        return self.ctx.compiled_forward_redundancy_mul(Q, idx, node_unique, node_inverse, efeat_unique, efeat_inverse, time_unique, time_inverse)
+        # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
+        return self.ctx.compiled_forward_redundancy_mul(idx, nodeData, _reverse_nids[blk.num_dst():], _reverse_nids[:blk.num_dst()], efeat_unique, efeat_inverse, time_unique, time_inverse, time_dst_unique, time_dst_inverse)
+        ## no scatter
+        # return self.ctx.compiled_forward_redundancy_mul(idx, node_unique, node_inverse, efeat_unique, efeat_inverse, time_unique, time_inverse, node_dst_unique, node_dst_inverse, time_dst_unique, time_dst_inverse)
         ## no-bug @torch.compile
         # return self.compute_z_ours(blk, zero_time_feat, nbrs_time_feat, idx) # TODO
         ## with nvtx
         # return self.compute_z_ours_nvtx(blk, zero_time_feat, nbrs_time_feat)
         
-    def forward(self, blk: TBlock) -> Tensor:
-        attn, V = self.forward_redundancy_mul(blk)
+    # input: nodeData, _reverse_nids
+    def forward(self, blk: TBlock, nodeData, _reverse_nids) -> Tensor:
+        attn, V = self.forward_redundancy_mul(blk, nodeData, _reverse_nids)
         with nvtx.annotate("else-leakyRelu", color="red"):
                 attn = self.attn_act(attn)
 
@@ -542,7 +563,9 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
                 del attn
 
             with nvtx.annotate("edge-reduce", color="blue"):
-                out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+                out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):]
+            # tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+            blk.dstdata['h'] = nodeData[_reverse_nids[:blk.num_dst()]]
             out = torch.cat([out, blk.dstdata['h']], dim=1)
 
         with nvtx.annotate("output", color="blue"):

@@ -780,9 +780,6 @@ class TGN(nn.Module):
             # 消融一下
             self.ctx.compiled_forward_redundancy_mul = torch.compile(self.attn0.compute_z_ours, dynamic=True)
 
-            # # TODO
-            # self._init_samples0_2_perfCeil()
-
             import warnings
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.overrides")
     
@@ -1033,12 +1030,22 @@ class TGN(nn.Module):
                         # 写回也可以pipeline TODO 不一定有必要，可以和后面的计算掩盖
                         tail.g.mem.update(_unique_nids, mem, unique_mail_ts) # 目前为写回CPU
 
-                        mem = mem[_reverse_nids]
+                        # no scatter
+                        # mem = mem[_reverse_nids]
 
-                # TODO                
+                # no scatter               
                 nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
+
+                # print(f"_reverse_nids[:tail.num_dst()] {_reverse_nids[:tail.num_dst()].shape}")
+                # print(f"nfeat[:tail.num_dst()] {nfeat[:tail.num_dst()].shape}") # \o/ acc success! test passed!
+                # print()
+
+                ''' 
                 tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
                 tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                '''
+                # no scatter
+                nodeData = nfeat + mem
                 del nfeat
                 del mem
 
@@ -1072,8 +1079,14 @@ class TGN(nn.Module):
                     output = None
                     with nvtx.annotate("blk.apply", color="red"):
                         with nvtx.annotate("blk.apply fn", color="red"):
-                            output = self.attn0(tail)
-                            # output = self.attn_origin(tail)
+                            '''
+                            node_unique, node_inverse = torch.unique(tail.srcdata['h'], dim=0, return_inverse=True)
+                            efeat_unique, efeat_inverse = torch.unique(tail.efeat(), dim=0, return_inverse=True) # 172的长度可能乘起来不够高效
+                            time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True) # TODO _unique_ets, _reverse_ets
+                            '''
+                            # input node unique _reverse_nids[:tail.num_dst()]
+                            output = self.attn0(tail, nodeData, _reverse_nids)
+                            # output = self.attn0(tail)
                         with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                             output = tail.run_hooks(output)
                     tail.clear_data()
@@ -1138,6 +1151,8 @@ class TGN(nn.Module):
                         nfeat = tail.nfeat() if self.nfeat_map is None else self.nfeat_map(tail.nfeat())
                         # torch.cuda.empty_cache()
                         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        nodeData = nfeat + mem
+                        nodeData_unique, nodeData_inverse = torch.unique(nodeData, dim=0, return_inverse=True)
                         tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
                         tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
                         # tt.t_mem_update += tt.elapsed(t_start)
@@ -1149,12 +1164,12 @@ class TGN(nn.Module):
                     #     # torch.cuda.empty_cache() # del 的变量占用的空间?不会立即释放
                     #     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     #     embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
-                    # TODO 训练改 推理也要改 self.xxx_along with forward train
+                    # ! 训练改 推理也要改 self.xxx_along with forward train
                     with nvtx.annotate("op.aggregate", color="green"):
                         output = None
                         with nvtx.annotate("blk.apply", color="red"):
                             with nvtx.annotate("blk.apply fn", color="red"):
-                                output = self.attn0(tail)
+                                output = self.attn0(tail, nodeData_unique, nodeData_inverse)
                             with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                                 output = tail.run_hooks(output)
                         tail.clear_data()
