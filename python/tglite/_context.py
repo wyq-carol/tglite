@@ -39,6 +39,9 @@ class TContext(object):
         self._time_window = int(1e4)
         self._time_tables = {}
 
+        # pre compile redundancy mul
+        self.compiled_forward_redundancy_mul = None
+
         # batch redundancy
         self._pre_nxt_efeat = torch.tensor([], device="cuda")
         self._pre_nxt_nfeat = torch.tensor([], device="cuda")

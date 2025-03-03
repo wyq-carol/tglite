@@ -502,8 +502,8 @@ class TBlock(object):
         # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
         with nvtx.annotate("_block _load_nfeat0_uniqLoadFeat_alreadyOnGPU", color="red"):
             # print(f"in _load_nfeat0_uniqLoadFeat self.allnodes().device {self.allnodes().device}") # TODO 联合采样将_nid转为tensor GPU上应该会更快，目前on CPU
-            with nvtx.annotate("torch.unique", color="red"):
-                unique_allnodes, inverse_indices = torch.unique(self.allnodes().to("cuda"), return_inverse=True)
+            # with nvtx.annotate("torch.unique", color="red"):
+            #    unique_allnodes, inverse_indices = torch.unique(self.allnodes().to("cuda"), return_inverse=True)
             # _unique_nids = _unique_nids.to(unique_allnodes.dtype)
             # assert torch.allclose(unique_allnodes, _unique_nids)
             # assert torch.allclose(inverse_indices, _reverse_nids)
@@ -514,13 +514,13 @@ class TBlock(object):
                         self._g.nfeat, _nids_cpu, use_pin,
                         self._ctx._get_nfeat_pin) # TODO 可以不在这重建
                 # 构成完整本轮batch使用的nfeat
-                self._c_nfeat = torch.empty((unique_allnodes.shape[0], cpu_nfeat.shape[1]), device="cuda")
+                self._c_nfeat = torch.empty((_unique_nids.shape[0], cpu_nfeat.shape[1]), device="cuda")
                 self._c_nfeat[_idx_nids_cpu] = cpu_nfeat
                 if _idx_nids_pre.shape[0] != 0:
                     self._c_nfeat[_idx_nids_pre] = self._ctx._pre_nxt_nfeat
                 # 下个batch会用到的nfeat
                 self._ctx._pre_nxt_nfeat = self._c_nfeat[_idx_nids_nxt]
-                self._c_nfeat = self._c_nfeat[inverse_indices]
+                self._c_nfeat = self._c_nfeat[_reverse_nids] # 分别算出重建dstnodes的reverse_dst_nids和重建srcnodes的reverse_src_nids # 最后写statistic逻辑
 
     def _load_efeat0_uniqLoadFeat(self, use_pin=True):
         """Loads the edge features to the TGraph's computation device."""

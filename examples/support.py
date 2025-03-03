@@ -15,6 +15,8 @@ from tglite.gpu_mem_track import *
 import nvtx
 import tglite.config
 import threading
+# import pycuda.autoinit
+# from pycuda import driver
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -228,6 +230,13 @@ class LinkPredTrainer(object):
         best_ap = 0
         for e in range(self.epochs):
             print(f'epoch {e}:')
+
+            if e >= 1: # TODO 没有用
+                print("[TEST] torch.cuda.nvtx.range_push")
+                # driver.cudaProfilerStart()
+                torch.cuda.nvtx.range_push("Epoch {}".format(e))
+            # 训练代码
+
             # print()
 
             torch.cuda.synchronize()
@@ -243,6 +252,7 @@ class LinkPredTrainer(object):
 
             epoch_loss = 0.0
             t_loop = tt.start()
+            print("[start] time")
 
             # 迭代器
             edge_iter = tg.iter_edges(self.g, size=self.bsize, end=self.train_end)
@@ -251,6 +261,10 @@ class LinkPredTrainer(object):
                 batch.neg_nodes = self.neg_sampler(len(batch))
                 while True:
                     # print(f"Batch {batch._b_id} - len(batch) {len(batch)}")
+                    if batch._b_id == 0:
+                        if tglite.config.PERF_CEIL: # TODO only TGN
+                            self.model._init_samples0_2_perfCeil()
+                    
                     try:
                         # import pdb;pdb.set_trace()
                         next_batch = next(edge_iter)
@@ -264,10 +278,18 @@ class LinkPredTrainer(object):
 
                     # test with nsys WYQ TODO
                     # if (True and tglite.config.ON_HETER): # TODO
-                    # if (True): # TODO
-                    if (False): # TODO
+                    if (True): # TODO
+                    # if (False): # TODO
                         # print(f"Batch {batch._b_id}")
-                        if (batch._b_id > 5):
+                        if (e > 0 and batch._b_id > 5):
+
+                            # 训练代码
+                            if e >= 1:
+                                print("[TEST] torch.cuda.nvtx.range_pop")
+                                # driver.cudaProfilerStop()
+                                torch.cuda.nvtx.range_pop()
+
+                            print("[end] time")
                             tt.t_batch_num_5 = tt.elapsed(t_loop)
                             tt.print_batch_num_5()
                             prefix='  '
@@ -320,7 +342,8 @@ class LinkPredTrainer(object):
                             # Sampling and preloading for next batch
                             self.ctx.perfCeilBase_thread = threading.Thread(target=perfCeilBase_preloading, args=(self, next_batch))
                             self.ctx.perfCeilBase_thread.start()
-
+                
+                    self.model.is_train = True
                     pred_pos, pred_neg = self.model(batch)
                     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     tt.t_forward += tt.elapsed(t_start)
@@ -359,7 +382,7 @@ class LinkPredTrainer(object):
                             with nvtx.annotate("threading preload nxt", color="purple"): # 取的是next batch
                                 if self.model.sampling_thread is not None:
                                     self.model.sampling_thread.join()
-                                    assert self.model.curr_data is None # 表示第一轮预采样/后来next batch 采样的结果已经被使用了
+                                    assert self.model.curr_data == None # 表示第一轮预采样/后来next batch 采样的结果已经被使用了
                                     self.model.curr_data = self.model.next_data
                                     self.model.next_data = None # 指示当前batch 可以开始下一轮预采样了
                                     if self.model.curr_data is not None: # 如果还有下一个batch
