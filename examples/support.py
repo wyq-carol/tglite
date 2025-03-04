@@ -281,7 +281,8 @@ class LinkPredTrainer(object):
                     if (True): # TODO
                     # if (False): # TODO
                         # print(f"Batch {batch._b_id}")
-                        if (e > 0 and batch._b_id > 5):
+                        if (e > 2 and batch._b_id > 5):
+                        # if (batch._b_id > 5):
 
                             # 训练代码
                             if e >= 1:

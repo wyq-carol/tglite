@@ -913,7 +913,7 @@ class TGN(nn.Module):
                                             curr._load_nfeat0_uniqLoadFeat_alreadyOnGPU(_unique_nids, _reverse_nids, _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, _nids_nxt, _idx_nids_nxt, use_pin=True)
                                     with nvtx.annotate("preload efeat", color="red"):
                                         # TODO refine efeat alike nfeat
-                                        curr._load_efeat0_uniqLoadFeat_alreadyOnGPU(_eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True)
+                                        curr._load_efeat0_uniqLoadFeat_alreadyOnGPU(unique_eids, _reverse_eids, _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True)
                             curr = curr.prev
 
                     if tail.num_dst() > 0:
@@ -977,8 +977,8 @@ class TGN(nn.Module):
 
                         mem = mem[_reverse_nids]'''
 
-                        with nvtx.annotate("cal mail_delta", color="red"):
-                            unique_mail_ts = tail.g.mailbox.time[_unique_nids]
+                        with nvtx.annotate("cal mail_delta", color="red"): # TODO
+                            unique_mail_ts = tail.g.mailbox.time[_unique_nids] # on cpu
                             delta = unique_mail_ts - tail.g.mem.time[_unique_nids]
                             mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to("cuda"))
                         # TODO divide pipelines
@@ -1085,7 +1085,7 @@ class TGN(nn.Module):
                             time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True) # TODO _unique_ets, _reverse_ets
                             '''
                             # input node unique _reverse_nids[:tail.num_dst()]
-                            output = self.attn0(tail, nodeData, _reverse_nids)
+                            output = self.attn0(tail, nodeData, _reverse_nids.to("cuda"), tail.efeat(), _reverse_eids.to("cuda"))
                             # output = self.attn0(tail)
                         with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                             output = tail.run_hooks(output)
@@ -1155,6 +1155,7 @@ class TGN(nn.Module):
                         nodeData_unique, nodeData_inverse = torch.unique(nodeData, dim=0, return_inverse=True)
                         tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
                         tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                        edgeData_unique, edgeData_inverse = torch.unique(tail.efeat(), dim=0, return_inverse=True)
                         # tt.t_mem_update += tt.elapsed(t_start)
                         del nfeat
                         del mem
@@ -1169,7 +1170,7 @@ class TGN(nn.Module):
                         output = None
                         with nvtx.annotate("blk.apply", color="red"):
                             with nvtx.annotate("blk.apply fn", color="red"):
-                                output = self.attn0(tail, nodeData_unique, nodeData_inverse)
+                                output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse)
                             with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                                 output = tail.run_hooks(output)
                         tail.clear_data()

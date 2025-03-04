@@ -469,13 +469,16 @@ class TBlock(object):
         tt.t_prep_input += tt.elapsed(t_start)
         return data
     
-    def _load_efeat0_uniqLoadFeat_alreadyOnGPU(self, _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True):
+    def _load_efeat0_uniqLoadFeat_alreadyOnGPU(self, unique_eids, _reverse_eids, _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True):
         """Loads the edge features to the TGraph's computation device."""
         # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
         with nvtx.annotate("_block _load_efeat0_uniqLoadFeat_alreadyOnGPU", color="red"):
             # print(f"in _load_efeat0_uniqLoadFeat self._eid.device {torch.tensor(self._eid).device}") # TODO 联合采样将_eid转为tensor GPU上应该会更快，目前on CPU
-            with nvtx.annotate("torch.unique", color="red"):
-                unique_eid, inverse_indices = torch.unique(torch.tensor(self._eid).to("cuda"), return_inverse=True)
+            # with nvtx.annotate("torch.unique", color="red"):
+            #     unique_eid, inverse_indices = torch.unique(torch.tensor(self._eid).to("cuda"), return_inverse=True)
+            # unique_eids = unique_eids.to(unique_eid.dtype)
+            # assert torch.allclose(unique_eid, unique_eids.to("cuda"))
+            # assert torch.allclose(inverse_indices, _reverse_eids.to("cuda"))
             if self._c_efeat is None and self._g.efeat is not None:
                 with nvtx.annotate("_block _load_feat0_uniqLoadEFeat", color="red"):
                     # TODO 需要额外解决read amplification
@@ -484,13 +487,14 @@ class TBlock(object):
                             self._g.efeat, _eids_cpu, use_pin,
                             self._ctx._get_efeat_pin) # TODO 可以不在这重建
                     # 构成完整本轮batch使用的efeat
-                    self._c_efeat = torch.empty((unique_eid.shape[0], cpu_efeat.shape[1]), device="cuda")
+                    self._c_efeat = torch.empty((unique_eids.shape[0], cpu_efeat.shape[1]), device="cuda")
                     self._c_efeat[_idx_eids_cpu] = cpu_efeat
                     if _idx_eids_pre.shape[0] != 0:
                         self._c_efeat[_idx_eids_pre] = self._ctx._pre_nxt_efeat # 意为preload nxt batch efeat
                     # 下个batch会用到的efeat
                     self._ctx._pre_nxt_efeat = self._c_efeat[_idx_eids_nxt]
-                    self._c_efeat = self._c_efeat[inverse_indices]
+                    # no scatter
+                    # self._c_efeat = self._c_efeat[_reverse_eids]
 
                     # efeat = self._load_feat0_uniqLoadFeat(
                     #     self._g.efeat, unique_eid.to("cpu"), use_pin,

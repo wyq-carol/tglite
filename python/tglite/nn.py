@@ -395,10 +395,10 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         # print(f"efeat_inverse= {efeat_inverse.shape}")
         # print(f"time_unique= {time_unique.shape}")
         # print(f"time_inverse= {time_inverse.shape}")
-        QKV_node = self.w_qkv_node(nodeData)
+        # QKV_node = self.w_qkv_node(nodeData)
 
-        # Q_node = self.w_q_node(nodeData)
-        Q_node = QKV_node[:, :self.dim_out]
+        Q_node = self.w_q_node(nodeData)
+        # Q_node = QKV_node[:, :self.dim_out]
         Q_time = self.w_q_time(time_dst_unique)
 
         Q_node = Q_node[node_dst_inverse]
@@ -408,8 +408,8 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         Q = Q_our[idx]
 
 
-        # Z_node = self.w_kv_node(nodeData)
-        Z_node = QKV_node[:, self.dim_out:]
+        Z_node = self.w_kv_node(nodeData)
+        # Z_node = QKV_node[:, self.dim_out:]
         Z_edge = self.w_kv_edge(efeat_unique)
         Z_time = self.w_kv_time(time_unique)
         
@@ -429,6 +429,7 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
 
         attn = torch.sum(Q * K, dim=2)
+        attn = self.attn_act(attn)
         return attn, V
 
     def compute_z_ours_nvtx(self, blk: TBlock, zero_time_feat, nbrs_time_feat):
@@ -513,33 +514,39 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
     
     # @torch.compile TODO
     # input: tail, nodeData, _reverse_nids
-    def forward_redundancy_mul(self, blk: TBlock, nodeData, _reverse_nids): # TODO build pipeline
+    def forward_redundancy_mul(self, blk: TBlock, nodeData, _reverse_nids, efeat_unique, _reverse_eids): # TODO build pipeline
         # [DOING] 先拆分计算；纵切只要传入对应的indices范围即可
         # 处理bottleneck 的KV 部分
-        with nvtx.annotate("precompute", color="blue"):
-            zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
-            nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
+        with nvtx.annotate("forward_redundancy_mul", color="blue"):
+            with nvtx.annotate("precompute", color="blue"):
+                # no scatter
+                # zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst()) # TODO 行全0 优化
+                time_dst_unique = precomputed_zeros(self.ctx, blk.layer, self.time_encode, 1) 
+                time_dst_inverse = torch.zeros(blk.num_dst(), dtype=torch.int64, device="cuda")
+                nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas()) # TODO
 
-        # Q = edge_view(blk, Q) # 对Q进行scatter
-        idx = torch.from_numpy(blk._dstindex)
-        idx = idx.to(device="cuda", dtype=torch.long)
+            # Q = edge_view(blk, Q) # 对Q进行scatter
+            idx = torch.from_numpy(blk._dstindex)
+            idx = idx.to(device="cuda", dtype=torch.long)
 
-        # 给具体可能的值 TODO
-        with torch.no_grad():
-            # node_unique, node_inverse = torch.unique(blk.srcdata['h'], dim=0, return_inverse=True)
-            efeat_unique, efeat_inverse = torch.unique(blk.efeat(), dim=0, return_inverse=True) # 172的长度可能乘起来不够高效
-            time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True)
+            # 给具体可能的值 TODO
+            with torch.no_grad():
+                # node_unique, node_inverse = torch.unique(blk.srcdata['h'], dim=0, return_inverse=True)
+                # efeat_unique, efeat_inverse = torch.unique(blk.efeat(), dim=0, return_inverse=True) # 172的长度可能乘起来不够高效
+                time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True)
 
-            # node_dst_unique, node_dst_inverse = torch.unique(blk.dstdata['h'], dim=0, return_inverse=True)
-            time_dst_unique, time_dst_inverse = torch.unique(zero_time_feat, dim=0, return_inverse=True)
+                # node_dst_unique, node_dst_inverse = torch.unique(blk.dstdata['h'], dim=0, return_inverse=True)
+                ## time_dst_unique_st, time_dst_inverse_st = torch.unique(zero_time_feat, dim=0, return_inverse=True) # 优先处理zero time feat
+                ## assert torch.allclose(time_dst_unique, time_dst_unique_st)
+                ## assert torch.allclose(time_dst_inverse, time_dst_inverse_st) # \O/ acc test passed!
 
-            # print("===") # TODO dst的冗余也有很多
-            # print(f"blk.dstdata['h'] {blk.dstdata['h'].shape}")
-            # print(f"node_dst_unique {node_dst_unique.shape}")
-            # print()
+                ## print("===") # TODO dst的冗余也有很多
+                ## print(f"blk.dstdata['h'] {blk.dstdata['h'].shape}")
+                ## print(f"node_dst_unique {node_dst_unique.shape}")
+                ## print()
 
         # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
-        return self.ctx.compiled_forward_redundancy_mul(idx, nodeData, _reverse_nids[blk.num_dst():], _reverse_nids[:blk.num_dst()], efeat_unique, efeat_inverse, time_unique, time_inverse, time_dst_unique, time_dst_inverse)
+        return self.ctx.compiled_forward_redundancy_mul(idx, nodeData, _reverse_nids[blk.num_dst():], _reverse_nids[:blk.num_dst()], efeat_unique, _reverse_eids, time_unique, time_inverse, time_dst_unique, time_dst_inverse)
         ## no scatter
         # return self.ctx.compiled_forward_redundancy_mul(idx, node_unique, node_inverse, efeat_unique, efeat_inverse, time_unique, time_inverse, node_dst_unique, node_dst_inverse, time_dst_unique, time_dst_inverse)
         ## no-bug @torch.compile
@@ -548,10 +555,8 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         # return self.compute_z_ours_nvtx(blk, zero_time_feat, nbrs_time_feat)
         
     # input: nodeData, _reverse_nids
-    def forward(self, blk: TBlock, nodeData, _reverse_nids) -> Tensor:
-        attn, V = self.forward_redundancy_mul(blk, nodeData, _reverse_nids)
-        with nvtx.annotate("else-leakyRelu", color="red"):
-                attn = self.attn_act(attn)
+    def forward(self, blk: TBlock, nodeData, _reverse_nids, efeat_unique, _reverse_eids) -> Tensor:
+        attn, V = self.forward_redundancy_mul(blk, nodeData, _reverse_nids, efeat_unique, _reverse_eids)
 
         with nvtx.annotate("edge-softmax", color="blue"):
             with nvtx.annotate("edge-softmax", color="blue"):

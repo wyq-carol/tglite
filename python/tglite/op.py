@@ -483,7 +483,7 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
                 else:
                     return encoder(False, torch.zeros(num, dtype=torch.float, device=cdev))
 
-        time_table = ctx._time_tables.get(id)
+        time_table = ctx._time_tables.get(id) # id 为layer id
         if time_table is None:
             time_table = encoder(torch.arange(
                 ctx._time_window + 1, dtype=torch.float, device=cdev))
