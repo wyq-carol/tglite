@@ -387,7 +387,7 @@ class LinkPredTrainer(object):
                                     self.model.curr_data = self.model.next_data
                                     self.model.next_data = None # 指示当前batch 可以开始下一轮预采样了
                                     if self.model.curr_data is not None: # 如果还有下一个batch
-                                        _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                                        _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
                                         prev_eids, next_eids, \
                                         prev_nodes, next_nodes, \
                                         unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \

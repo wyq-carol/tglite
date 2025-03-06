@@ -514,7 +514,7 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
     
     # @torch.compile TODO
     # input: tail, nodeData, _reverse_nids
-    def forward_redundancy_mul(self, blk: TBlock, nodeData, _reverse_nids, efeat_unique, _reverse_eids): # TODO build pipeline
+    def forward_redundancy_mul(self, blk: TBlock, nodeData, _reverse_nids, efeat_unique, _reverse_eids, _unique_time_delta, _reverse_time_delta): # TODO build pipeline
         # [DOING] 先拆分计算；纵切只要传入对应的indices范围即可
         # 处理bottleneck 的KV 部分
         with nvtx.annotate("forward_redundancy_mul", color="blue"):
@@ -523,17 +523,42 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
                 # zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst()) # TODO 行全0 优化
                 time_dst_unique = precomputed_zeros(self.ctx, blk.layer, self.time_encode, 1) 
                 time_dst_inverse = torch.zeros(blk.num_dst(), dtype=torch.int64, device="cuda")
-                nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas()) # TODO
+                # nbrs_time_feat_st = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas()) # TODO
+                nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, _unique_time_delta.to("cuda")) # precompute是elementwise 理论上讲行不变
 
             # Q = edge_view(blk, Q) # 对Q进行scatter
             idx = torch.from_numpy(blk._dstindex)
             idx = idx.to(device="cuda", dtype=torch.long)
 
+            '''
             # 给具体可能的值 TODO
-            with torch.no_grad():
+            # with torch.no_grad():
                 # node_unique, node_inverse = torch.unique(blk.srcdata['h'], dim=0, return_inverse=True)
                 # efeat_unique, efeat_inverse = torch.unique(blk.efeat(), dim=0, return_inverse=True) # 172的长度可能乘起来不够高效
-                time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True)
+                # time_unique, time_inverse = torch.unique(nbrs_time_feat_st, dim=0, return_inverse=True)
+                # print(f"nbrs_time_feat_st.shape {nbrs_time_feat_st.shape}")
+                # print(f"nbrs_time_feat_st = {nbrs_time_feat_st}")
+                # print(f"nbrs_time_feat[_reverse_time_delta].shape {nbrs_time_feat[_reverse_time_delta].shape}")
+                # print(f"nbrs_time_feat[_reverse_time_delta] = {nbrs_time_feat[_reverse_time_delta]}")
+                # time_d_unique, time_d_inverse = torch.unique(blk.time_deltas(), dim=0, return_inverse=True)
+                # print(f"_unique_time_delta.shape {_unique_time_delta[_reverse_time_delta].shape}")
+                # print(f"_unique_time_delta[_reverse_time_delta] = {_unique_time_delta[_reverse_time_delta]}")
+                # print(f"blk.time_deltas().shape {blk.time_deltas().shape}")
+                # print(f"blk.time_deltas() = {blk.time_deltas()}")
+                # print(f"_reverse_time_delta.shape {_reverse_time_delta.shape}")
+                # print(f"_reverse_time_delta = {_reverse_time_delta}")
+                # print(f"time_inverse.shape {time_inverse.shape}")
+                # print(f"time_inverse = {time_inverse}")
+                # print(f"nbrs_time_feat.shape {nbrs_time_feat.shape}")
+                # print(f"nbrs_time_feat = {nbrs_time_feat}")
+                # print(f"time_unique.shape {time_unique.shape}")
+                # print(f"time_unique = {time_unique}")
+                # assert torch.allclose(_unique_time_delta[_reverse_time_delta].to("cuda"), blk.time_deltas())
+                # assert torch.allclose(nbrs_time_feat[_reverse_time_delta], nbrs_time_feat_st) # \O/ acc test passed!
+                # print(f"time_unique {time_unique.shape}")
+                # print(f"time_inverse = {time_inverse}")
+                # print(f"time_delta_unique {time_d_unique.shape}")
+                # print(f"time_delta_inverse = {time_d_inverse}")
 
                 # node_dst_unique, node_dst_inverse = torch.unique(blk.dstdata['h'], dim=0, return_inverse=True)
                 ## time_dst_unique_st, time_dst_inverse_st = torch.unique(zero_time_feat, dim=0, return_inverse=True) # 优先处理zero time feat
@@ -544,9 +569,10 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
                 ## print(f"blk.dstdata['h'] {blk.dstdata['h'].shape}")
                 ## print(f"node_dst_unique {node_dst_unique.shape}")
                 ## print()
+            '''
 
         # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
-        return self.ctx.compiled_forward_redundancy_mul(idx, nodeData, _reverse_nids[blk.num_dst():], _reverse_nids[:blk.num_dst()], efeat_unique, _reverse_eids, time_unique, time_inverse, time_dst_unique, time_dst_inverse)
+        return self.ctx.compiled_forward_redundancy_mul(idx, nodeData, _reverse_nids[blk.num_dst():], _reverse_nids[:blk.num_dst()], efeat_unique, _reverse_eids, nbrs_time_feat, _reverse_time_delta, time_dst_unique, time_dst_inverse)
         ## no scatter
         # return self.ctx.compiled_forward_redundancy_mul(idx, node_unique, node_inverse, efeat_unique, efeat_inverse, time_unique, time_inverse, node_dst_unique, node_dst_inverse, time_dst_unique, time_dst_inverse)
         ## no-bug @torch.compile
@@ -555,8 +581,8 @@ class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
         # return self.compute_z_ours_nvtx(blk, zero_time_feat, nbrs_time_feat)
         
     # input: nodeData, _reverse_nids
-    def forward(self, blk: TBlock, nodeData, _reverse_nids, efeat_unique, _reverse_eids) -> Tensor:
-        attn, V = self.forward_redundancy_mul(blk, nodeData, _reverse_nids, efeat_unique, _reverse_eids)
+    def forward(self, blk: TBlock, nodeData, _reverse_nids, efeat_unique, _reverse_eids, _unique_time_delta, _reverse_time_delta) -> Tensor:
+        attn, V = self.forward_redundancy_mul(blk, nodeData, _reverse_nids, efeat_unique, _reverse_eids, _unique_time_delta, _reverse_time_delta)
 
         with nvtx.annotate("edge-softmax", color="blue"):
             with nvtx.annotate("edge-softmax", color="blue"):

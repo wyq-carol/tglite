@@ -123,7 +123,7 @@ if __name__ == "__main__":
         # _new_samples = torch.load(file_path)
 
         # for sample in _new_samples:
-        #     b_dstnodes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+        #     b_dstnodes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
         #     unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
         #     _eids_pre, _nids_pre, _eids_nxt, _nids_nxt = sample
         #     # print(f"b_dstnodes {b_dstnodes.size()}")

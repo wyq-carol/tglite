@@ -135,6 +135,16 @@ if __name__ == "__main__":
             b_eids = torch.tensor(_eids[b_i]).to(device)
             b_ets = torch.tensor(_ets[b_i]).to(device)
 
+            print(f"b_dsttimes.shape {b_dsttimes.shape}")
+            print(f"b_dstnodes.shape {b_dstnodes.shape}")
+            print(f"b_dstindex.max {b_dstindex.max()}")
+            print(f"b_dstindex.shape {b_dstindex.shape}")
+            print(f"b_ets.shape {b_ets.shape}")
+            b_dsttimes_scatter = b_dsttimes[b_dstindex]
+            # dts - ets
+            time_delta = b_dsttimes_scatter - b_ets
+            _unique_time_delta, _reverse_time_delta = torch.unique(time_delta, return_inverse=True)
+
             # print(f"b_dstnodes {b_dstnodes.size()}") # (dstnodes, dsttimes) 是unique的
             # print(f"b_dsttimes {b_dsttimes.size()}")
             # print(f"b_dstindex {b_dstindex.size()}")
@@ -243,7 +253,7 @@ if __name__ == "__main__":
             '''
             new_sample = (
                 b_inv_idx,
-                b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets,
+                b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta,
                 prev_eids, next_eids,
                 prev_nodes, next_nodes,
                 _unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets,

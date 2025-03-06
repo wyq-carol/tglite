@@ -7,6 +7,7 @@ from torch import Tensor
 
 from ._core import TError
 
+import concurrent.futures # todo 线程池
 
 class TContext(object):
     """Graph-level context and scratch space used by the tglite runtime."""

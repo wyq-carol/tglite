@@ -615,7 +615,7 @@ class TGN(nn.Module):
                 #  TBlock def __init__(self, ctx: 'TContext', layer: int, dstnodes: np.ndarray, dsttimes: np.ndarray,
                 #  dstindex: np.ndarray = None, srcnodes: np.ndarray = None,
                 #  eid: np.ndarray = None, ets: np.ndarray = None):
-                _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
                 prev_eids, next_eids, \
                 prev_nodes, next_nodes, \
                 unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
@@ -694,6 +694,33 @@ class TGN(nn.Module):
             return scores
 
 
+    def save_raw_msgs2_perfCeil_noStatistic(self, batch: tg.TBatch):
+        sdev = batch.g.storage_device()
+        mem = batch.g.mem.data
+
+        with nvtx.annotate("save raw msgs-block_adj", color="red"):
+            # 由于new blk 我肯定load了很多没用的东西 # 怎么区分哪些是negs, 哪些是pos
+            blk = batch.block_adj(self.ctx)
+        with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
+            blk = tg.op.coalesce(blk, by='latest')
+
+        with nvtx.annotate("save raw msgs-uniq nbrs", color="red"):
+            # 可以直接在这里拿到uniq和nbrs
+            # 写回数据量实际很小 μs级别
+            uniq = torch.from_numpy(blk.dstnodes).long().to(sdev)
+            nbrs = torch.from_numpy(blk.srcnodes).long().to(sdev)
+            
+            # TODO **去冗余重建_mailbox**
+            # self.dstnodes2latestNbrs[uniq, 0] = nbrs
+            if self.dim_edge > 0:
+                eids = torch.from_numpy(blk.eid).long().to(sdev)
+                # self.dstnodes2latestNbrs[uniq, 1] = eids
+                mail = torch.cat([mem[uniq], mem[nbrs], batch.g.efeat[eids]], dim=1)
+            else:
+                mail = torch.cat([mem[uniq], mem[nbrs]], dim=1)
+            mail_ts = torch.from_numpy(blk.ets).to(sdev)
+        with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
+            batch.g.mailbox.store(uniq, mail, mail_ts, uniq, nbrs, batch._b_id)
 
     def save_raw_msgs2_perfCeil(self, batch: tg.TBatch):
         sdev = batch.g.storage_device()
@@ -785,7 +812,7 @@ class TGN(nn.Module):
     
     def _init_samples0_2_perfCeil(self):
             self.curr_data = self._new_samples[0]
-            _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+            _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
             prev_eids, next_eids, \
             prev_nodes, next_nodes, \
             unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
@@ -807,7 +834,7 @@ class TGN(nn.Module):
     def forward2_perfCeil(self, batch: tg.TBatch) -> Tensor:
         # print(f"    HERE forward2_perfCeil")
         def sampling(self, _b_id):
-            # _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+            # _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
             # prev_eids, next_eids, \
             # prev_nodes, next_nodes, \
             # unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
@@ -830,7 +857,7 @@ class TGN(nn.Module):
                 with nvtx.annotate("thread sampling nxt", color="purple"):
                     # print(f"    here thread sampling nxt")
                     assert self.curr_data is not None # 同步点在support.py 的preload
-                    _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
+                    _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
                     prev_eids, next_eids, \
                     prev_nodes, next_nodes, \
                     unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
@@ -841,6 +868,11 @@ class TGN(nn.Module):
                     self.curr_data = None
                     # print(f"    self.curr_data {self.curr_data}")
                     # print(f"    here self.curr_data = None")
+                    # print(f"_unique_ets {_unique_ets}")
+                    # print(f"_unique_ets {_unique_ets.shape}")
+                    # print(f"_reverse_ets {_reverse_ets}")
+                    # print(f"_reverse_ets {_reverse_ets.shape}")
+                    # print()
 
                     # Sampling for next batch 每次只预取一个batch
                     assert self.next_data == None
@@ -857,7 +889,7 @@ class TGN(nn.Module):
                     '''
                     # new_sample = (
                     #     b_inv_idx,
-                    #     b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets,
+                    #     b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta,
                     #     prev_eids, next_eids,
                     #     prev_nodes, next_nodes,
                     #     _unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets,
@@ -1085,7 +1117,7 @@ class TGN(nn.Module):
                             time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True) # TODO _unique_ets, _reverse_ets
                             '''
                             # input node unique _reverse_nids[:tail.num_dst()]
-                            output = self.attn0(tail, nodeData, _reverse_nids.to("cuda"), tail.efeat(), _reverse_eids.to("cuda"))
+                            output = self.attn0(tail, nodeData, _reverse_nids.to("cuda"), tail.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
                             # output = self.attn0(tail)
                         with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                             output = tail.run_hooks(output)
@@ -1108,7 +1140,8 @@ class TGN(nn.Module):
                 del neg
                 with nvtx.annotate("save raw msgs", color="purple"):
                     # self.save_raw_msgs2_perfCeil(batch) # TODO 用于 statistic，换成初始版
-                    self.save_raw_msgs(batch) # TODO 还可以优化
+                    self.save_raw_msgs2_perfCeil_noStatistic(batch)
+                    # self.save_raw_msgs(batch) # TODO 还可以优化
                     ## no_redundant_memUpd
                     # self.save_raw_msgs0_no_redundant_memUpd(batch)
                 return scores
@@ -1156,6 +1189,7 @@ class TGN(nn.Module):
                         tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
                         tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
                         edgeData_unique, edgeData_inverse = torch.unique(tail.efeat(), dim=0, return_inverse=True)
+                        time_d_unique, time_d_inverse = torch.unique(tail.time_deltas(), dim=0, return_inverse=True)
                         # tt.t_mem_update += tt.elapsed(t_start)
                         del nfeat
                         del mem
@@ -1170,7 +1204,7 @@ class TGN(nn.Module):
                         output = None
                         with nvtx.annotate("blk.apply", color="red"):
                             with nvtx.annotate("blk.apply fn", color="red"):
-                                output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse)
+                                output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse, time_d_unique, time_d_inverse)
                             with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                                 output = tail.run_hooks(output)
                         tail.clear_data()
@@ -1429,7 +1463,7 @@ class TGN(nn.Module):
         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         with nvtx.annotate("save raw msgs-block_adj", color="red"):
-            # 由于new blk 我肯定load了很多没用的东西
+            # 由于new blk 我肯定load了很多没用的东西 # 纯offline
             blk = batch.block_adj(self.ctx)
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         with nvtx.annotate("save raw msgs-op.coalesce", color="red"):

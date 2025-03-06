@@ -358,9 +358,30 @@ class TBlock(object):
         with nvtx.annotate("time_deltas", color="green"):
             with nvtx.annotate("time_deltas _check_has_nbrs", color="red"):
                 self._check_has_nbrs()
-            with nvtx.annotate("time_deltas dts", color="green"): # 1.cpu计算1ms+传输和gpu计算 tradeoff？ 2.mem.cell kernel低效和async的memcpy有关吗？
+            with nvtx.annotate("time_deltas dts", color="green"): # 1.cpu计算1ms+传输和gpu计算 tradeoff？ 2.mem.cell kernel低效和async的memcpy有关吗？(纯计算长只是因为算的多)
                 dts = self._dsttimes[self._dstindex]
-            dts = dts - self._ets
+                # print(f"self._dstindex {self._dstindex.shape}")
+                # print(f"self._dstindex {self._dstindex}")
+                # print()
+            dts = dts - self._ets # 只处理去冗余的ets 也能节约load / on CPU or GPU? / 总之先处理掉unique 的开销
+            dev = self._g.compute_device()
+            with nvtx.annotate("time_deltas dts.to", color="green"):
+                return torch.from_numpy(dts).to(device=dev, dtype=torch.float)
+            
+    def time_deltas_uniqLoad(self) -> Tensor: # TODO 还没有被调用过
+        """Computes the timestamp differences between destination nodes (used for sampling) and edges and returns
+        them as a tensor in pre-defined TGraph's computation device.
+        
+        :return: A tensor containing the time deltas.
+        """
+        if self._g.storage_device() != torch.device("cpu"):
+            return (self._g_dsttimes[self._g_dstindex] - self._g_ets)
+        with nvtx.annotate("time_deltas", color="green"):
+            with nvtx.annotate("time_deltas _check_has_nbrs", color="red"):
+                self._check_has_nbrs()
+            with nvtx.annotate("time_deltas dts", color="green"): # 1.cpu计算1ms+传输和gpu计算 tradeoff？ 2.mem.cell kernel低效和async的memcpy有关吗？(纯计算长只是因为算的多)
+                dts = self._dsttimes[self._dstindex]
+            dts = dts - self._ets # 只处理去冗余的ets 也能节约load / on CPU or GPU? / 总之先处理掉unique 的开销
             dev = self._g.compute_device()
             with nvtx.annotate("time_deltas dts.to", color="green"):
                 return torch.from_numpy(dts).to(device=dev, dtype=torch.float)
