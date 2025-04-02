@@ -1,0 +1,1093 @@
+Namespace(bsize=1500, data='wiki-talk', data_path='', dim_embed=100, dim_time=100, dropout=0.1, epochs=1, gpu=0, lr=0.0001, move=True, n_heads=2, n_layers=1, n_nbrs=10, n_threads=64, opt_all=False, opt_dedup=False, opt_time=False, prefix='exp', sampling='recent', seed=0, time_window=10000.0)
+num edges: 7833140
+num nodes: 1140149
+edge feat: torch.Size([7833140, 172])
+node feat: torch.Size([1140149, 172])
+cur small_pool              0 = 0MB
+cur large_pool 12348207104 ≈ 11776.1680MB
+
+count_memory_stats 0: tgn/train.py at line 67
+operation requested memory  : 12347245664 ≈ 11775.2511MB
+operation allocated memory  : 12348207104 ≈ 11776.1680MB
+operation reserved  memory  : 12352225280 = 11780MB    new segments belongs to 0 small pools, 4 large pools
+total     reserved  memory  : 12352225280 = 11780MB    small_pool(0)   large_pool(4)
+total     active    memory  : 12348207104 ≈ 11776.1680MB    small_pool(0)   large_pool(4)
+total     inactive  memory  :   4018176 ≈ 3.8320MB    small_pool(0)   large_pool(2)
+cur small_pool              0 = 0MB
+cur large_pool 14509984768 ≈ 13837.7998MB
+
+count_memory_stats 1: tgn/train.py at line 77
+operation requested memory  : 2161722504 ≈ 2061.5792MB
+operation allocated memory  : 2161777664 ≈ 2061.6318MB
+operation reserved  memory  :  2174746624 = 2074MB    new segments belongs to 0 small pools, 3 large pools
+total     reserved  memory  : 14526971904 = 13854MB    small_pool(0)   large_pool(7)
+total     active    memory  : 14509984768 ≈ 13837.7998MB    small_pool(0)   large_pool(8)
+total     inactive  memory  : 16987136 ≈ 16.2002MB    small_pool(0)   large_pool(4)
+cur small_pool   1306624 ≈ 1.2461MB
+cur large_pool 14509984768 ≈ 13837.7998MB
+
+count_memory_stats 2: tgn/train.py at line 114
+operation requested memory  :   1300804 ≈ 1.2405MB
+operation allocated memory  :   1306624 ≈ 1.2461MB
+operation reserved  memory  :        2097152 = 2MB    new segment belong to small pool
+total     reserved  memory  : 14529069056 = 13856MB    small_pool(1)   large_pool(7)
+total     active    memory  : 14511291392 ≈ 13839.0459MB    small_pool(24)   large_pool(8)
+total     inactive  memory  : 17777664 ≈ 16.9541MB    small_pool(1)   large_pool(4)
+epoch 0:
+
+batch 0:
+cur small_pool   1306624 ≈ 1.2461MB
+cur large_pool 14509984768 ≈ 13837.7998MB
+
+count_memory_stats 3: /home/tglite/examples/support.py at line 185
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14529069056 = 13856MB    small_pool(1)   large_pool(7)
+total     active    memory  : 14511291392 ≈ 13839.0459MB    small_pool(24)   large_pool(8)
+total     inactive  memory  : 17777664 ≈ 16.9541MB    small_pool(1)   large_pool(4)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14509984768 ≈ 13837.7998MB
+
+count_memory_stats 4: /home/tglite/python/tglite/op.py at line 133
+operation requested memory  :    569160 ≈ 0.5428MB
+operation allocated memory  :    570368 ≈ 0.5439MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14529069056 = 13856MB    small_pool(1)   large_pool(7)
+total     active    memory  : 14511861760 ≈ 13839.5898MB    small_pool(29)   large_pool(8)
+total     inactive  memory  : 17207296 ≈ 16.4102MB    small_pool(2)   large_pool(4)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14543539200 ≈ 13869.7998MB
+
+count_memory_stats 5: /home/tglite/python/tglite/op.py at line 135
+operation requested memory  : 32624400 ≈ 31.1131MB
+operation allocated memory  :      33554432 = 32MB
+operation reserved  memory  :      33554432 = 32MB    new segment belong to large pool
+total     reserved  memory  : 14562623488 = 13888MB    small_pool(1)   large_pool(8)
+total     active    memory  : 14545416192 ≈ 13871.5898MB    small_pool(29)   large_pool(9)
+total     inactive  memory  : 17207296 ≈ 16.4102MB    small_pool(2)   large_pool(4)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14543539200 ≈ 13869.7998MB
+
+count_memory_stats 6: /home/tglite/python/tglite/op.py at line 137
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14562623488 = 13888MB    small_pool(1)   large_pool(8)
+total     active    memory  : 14545416192 ≈ 13871.5898MB    small_pool(29)   large_pool(9)
+total     inactive  memory  : 17207296 ≈ 16.4102MB    small_pool(2)   large_pool(4)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14552309248 ≈ 13878.1636MB
+
+count_memory_stats 7: /home/tglite/python/tglite/op.py at line 139
+operation requested memory  :   8770000 ≈ 8.3637MB
+operation allocated memory  :   8770048 ≈ 8.3638MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14562623488 = 13888MB    small_pool(1)   large_pool(8)
+total     active    memory  : 14554186240 ≈ 13879.9536MB    small_pool(29)   large_pool(10)
+total     inactive  memory  :   8437248 ≈ 8.0464MB    small_pool(2)   large_pool(4)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14552309248 ≈ 13878.1636MB
+
+count_memory_stats 8: /home/tglite/python/tglite/op.py at line 143
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14562623488 = 13888MB    small_pool(1)   large_pool(8)
+total     active    memory  : 14554186240 ≈ 13879.9536MB    small_pool(29)   large_pool(10)
+total     inactive  memory  :   8437248 ≈ 8.0464MB    small_pool(2)   large_pool(4)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14567393792 ≈ 13892.5493MB
+
+count_memory_stats 9: /home/tglite/python/tglite/op.py at line 145
+operation requested memory  : 15084400 ≈ 14.3856MB
+operation allocated memory  : 15084544 ≈ 14.3857MB
+operation reserved  memory  :      16777216 = 16MB    new segment belong to large pool
+total     reserved  memory  : 14579400704 = 13904MB    small_pool(1)   large_pool(9)
+total     active    memory  : 14569270784 ≈ 13894.3394MB    small_pool(29)   large_pool(11)
+total     inactive  memory  :  10129920 ≈ 9.6606MB    small_pool(2)   large_pool(5)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14567393792 ≈ 13892.5493MB
+
+count_memory_stats 10: /home/tglite/python/tglite/op.py at line 147
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14579400704 = 13904MB    small_pool(1)   large_pool(9)
+total     active    memory  : 14569270784 ≈ 13894.3394MB    small_pool(29)   large_pool(11)
+total     inactive  memory  :  10129920 ≈ 9.6606MB    small_pool(2)   large_pool(5)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 11: /home/tglite/python/tglite/op.py at line 149
+operation requested memory  : 12306944 ≈ 11.7368MB
+operation allocated memory  :      12582912 = 12MB
+operation reserved  memory  :      12582912 = 12MB    new segment belong to large pool
+total     reserved  memory  : 14591983616 = 13916MB    small_pool(1)   large_pool(10)
+total     active    memory  : 14581853696 ≈ 13906.3394MB    small_pool(29)   large_pool(12)
+total     inactive  memory  :  10129920 ≈ 9.6606MB    small_pool(2)   large_pool(5)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 12: /home/tglite/examples/tgn/tgn.py at line 60
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14591983616 = 13916MB    small_pool(1)   large_pool(10)
+total     active    memory  : 14581853696 ≈ 13906.3394MB    small_pool(29)   large_pool(12)
+total     inactive  memory  :  10129920 ≈ 9.6606MB    small_pool(2)   large_pool(5)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 13: /home/tglite/examples/tgn/tgn.py at line 64
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14591983616 = 13916MB    small_pool(1)   large_pool(10)
+total     active    memory  : 14581853696 ≈ 13906.3394MB    small_pool(29)   large_pool(12)
+total     inactive  memory  :  10129920 ≈ 9.6606MB    small_pool(2)   large_pool(5)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 14: /home/tglite/examples/tgn/tgn.py at line 114
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14591983616 = 13916MB    small_pool(1)   large_pool(10)
+total     active    memory  : 14581853696 ≈ 13906.3394MB    small_pool(29)   large_pool(12)
+total     inactive  memory  :  10129920 ≈ 9.6606MB    small_pool(2)   large_pool(5)
+cur small_pool   1876992 ≈ 1.7900MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 15: /home/tglite/examples/tgn/tgn.py at line 121
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14591983616 = 13916MB    small_pool(1)   large_pool(10)
+total     active    memory  : 14581853696 ≈ 13906.3394MB    small_pool(29)   large_pool(12)
+total     inactive  memory  :  10129920 ≈ 9.6606MB    small_pool(2)   large_pool(5)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 16: /home/tglite/examples/tgn/tgn.py at line 125
+operation requested memory  :     87700 ≈ 0.0836MB
+operation allocated memory  :     88064 ≈ 0.0840MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14591983616 = 13916MB    small_pool(1)   large_pool(10)
+total     active    memory  : 14581941760 ≈ 13906.4233MB    small_pool(30)   large_pool(12)
+total     inactive  memory  :  10041856 ≈ 9.5767MB    small_pool(2)   large_pool(5)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 17: /home/tglite/examples/tgn/tgn.py at line 127
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14591983616 = 13916MB    small_pool(1)   large_pool(10)
+total     active    memory  : 14581941760 ≈ 13906.4233MB    small_pool(30)   large_pool(12)
+total     inactive  memory  :  10041856 ≈ 9.5767MB    small_pool(2)   large_pool(5)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 18: /home/tglite/examples/tgn/tgn.py at line 132
+operation requested memory  :     87700 ≈ 0.0836MB
+operation allocated memory  :     88064 ≈ 0.0840MB
+operation reserved  memory  :        2097152 = 2MB    new segment belong to small pool
+total     reserved  memory  : 14594080768 = 13918MB    small_pool(2)   large_pool(10)
+total     active    memory  : 14582029824 ≈ 13906.5073MB    small_pool(31)   large_pool(12)
+total     inactive  memory  : 12050944 ≈ 11.4927MB    small_pool(3)   large_pool(5)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 19: /home/tglite/python/tglite/op.py at line 408
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14594080768 = 13918MB    small_pool(2)   large_pool(10)
+total     active    memory  : 14582029824 ≈ 13906.5073MB    small_pool(31)   large_pool(12)
+total     inactive  memory  : 12050944 ≈ 11.4927MB    small_pool(3)   large_pool(5)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 20: /home/tglite/python/tglite/nn.py at line 79
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14594080768 = 13918MB    small_pool(2)   large_pool(10)
+total     active    memory  : 14582029824 ≈ 13906.5073MB    small_pool(31)   large_pool(12)
+total     inactive  memory  : 12050944 ≈ 11.4927MB    small_pool(3)   large_pool(5)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14579976704 ≈ 13904.5493MB
+
+count_memory_stats 21: /home/tglite/python/tglite/mymodule.py at line 47
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14594080768 = 13918MB    small_pool(2)   large_pool(10)
+total     active    memory  : 14582029824 ≈ 13906.5073MB    small_pool(31)   large_pool(12)
+total     inactive  memory  : 12050944 ≈ 11.4927MB    small_pool(3)   large_pool(5)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14597266432 ≈ 13921.0381MB
+
+count_memory_stats 22: /home/tglite/python/tglite/nn.py at line 81
+operation requested memory  : 17289680 ≈ 16.4887MB
+operation allocated memory  : 17289728 ≈ 16.4888MB
+operation reserved  memory  :      20971520 = 20MB    new segment belong to large pool
+total     reserved  memory  : 14615052288 = 13938MB    small_pool(2)   large_pool(11)
+total     active    memory  : 14599319552 ≈ 13922.9961MB    small_pool(31)   large_pool(14)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14606036480 ≈ 13929.4019MB
+
+count_memory_stats 23: /home/tglite/python/tglite/nn.py at line 83
+operation requested memory  :   8770000 ≈ 8.3637MB
+operation allocated memory  :   8770048 ≈ 8.3638MB
+operation reserved  memory  :      20971520 = 20MB    new segment belong to large pool
+total     reserved  memory  : 14636023808 = 13958MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14608089600 ≈ 13931.3599MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 27934208 ≈ 26.6401MB    small_pool(3)   large_pool(7)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14606036480 ≈ 13929.4019MB
+
+count_memory_stats 24: /home/tglite/examples/tgn/tgn.py at line 134
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14636023808 = 13958MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14608089600 ≈ 13931.3599MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 27934208 ≈ 26.6401MB    small_pool(3)   large_pool(7)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14639209472 ≈ 13961.0381MB
+
+count_memory_stats 25: /home/tglite/examples/tgn/tgn.py at line 137
+operation requested memory  : 32624400 ≈ 31.1131MB
+operation allocated memory  : 33172992 ≈ 31.6362MB
+operation reserved  memory  :      20971520 = 20MB    no new segment
+total     reserved  memory  : 14656995328 = 13978MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14641262592 ≈ 13962.9961MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14639209472 ≈ 13961.0381MB
+
+count_memory_stats 26: /home/tglite/examples/tgn/tgn.py at line 140
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14656995328 = 13978MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14641262592 ≈ 13962.9961MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14639209472 ≈ 13961.0381MB
+
+count_memory_stats 27: /home/tglite/examples/tgn/tgn.py at line 143
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14656995328 = 13978MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14641262592 ≈ 13962.9961MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14639209472 ≈ 13961.0381MB
+
+count_memory_stats 28: /home/tglite/python/tglite/mymodule.py at line 168
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14656995328 = 13978MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14641262592 ≈ 13962.9961MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14639209472 ≈ 13961.0381MB
+
+count_memory_stats 29: /home/tglite/python/tglite/mymodule.py at line 174
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14656995328 = 13978MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14641262592 ≈ 13962.9961MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14639209472 ≈ 13961.0381MB
+
+count_memory_stats 30: /home/tglite/python/tglite/mymodule.py at line 178
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14656995328 = 13978MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14641262592 ≈ 13962.9961MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14639209472 ≈ 13961.0381MB
+
+count_memory_stats 31: /home/tglite/python/tglite/mymodule.py at line 183
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14656995328 = 13978MB    small_pool(2)   large_pool(12)
+total     active    memory  : 14641262592 ≈ 13962.9961MB    small_pool(31)   large_pool(15)
+total     inactive  memory  : 15732736 ≈ 15.0039MB    small_pool(3)   large_pool(6)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14746545664 ≈ 14063.4019MB
+
+count_memory_stats 32: /home/tglite/python/tglite/mymodule.py at line 191
+operation requested memory  : 105240000 ≈ 100.3647MB
+operation allocated memory  : 107336192 ≈ 102.3638MB
+operation reserved  memory  :    119537664 = 114MB    new segments belongs to 0 small pools, 4 large pools
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748598784 ≈ 14065.3599MB    small_pool(31)   large_pool(19)
+total     inactive  memory  : 27934208 ≈ 26.6401MB    small_pool(3)   large_pool(7)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14746545664 ≈ 14063.4019MB
+
+count_memory_stats 33: /home/tglite/python/tglite/mymodule.py at line 195
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748598784 ≈ 14065.3599MB    small_pool(31)   large_pool(19)
+total     inactive  memory  : 27934208 ≈ 26.6401MB    small_pool(3)   large_pool(7)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14746545664 ≈ 14063.4019MB
+
+count_memory_stats 34: /home/tglite/examples/tgn/tgn.py at line 145
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748598784 ≈ 14065.3599MB    small_pool(31)   large_pool(19)
+total     inactive  memory  : 27934208 ≈ 26.6401MB    small_pool(3)   large_pool(7)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14746545664 ≈ 14063.4019MB
+
+count_memory_stats 35: /home/tglite/examples/tgn/tgn.py at line 148
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748598784 ≈ 14065.3599MB    small_pool(31)   large_pool(19)
+total     inactive  memory  : 27934208 ≈ 26.6401MB    small_pool(3)   large_pool(7)
+cur small_pool   2053120 ≈ 1.9580MB
+cur large_pool 14746545664 ≈ 14063.4019MB
+
+count_memory_stats 36: /home/tglite/examples/tgn/tgn.py at line 150
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748598784 ≈ 14065.3599MB    small_pool(31)   large_pool(19)
+total     inactive  memory  : 27934208 ≈ 26.6401MB    small_pool(3)   large_pool(7)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14746545664 ≈ 14063.4019MB
+
+count_memory_stats 37: /home/tglite/examples/tgn/tgn.py at line 66
+operation requested memory  :   -87700 ≈ -0.0836MB
+operation allocated memory  :   -88064 ≈ -0.0840MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748510720 ≈ 14065.2759MB    small_pool(30)   large_pool(19)
+total     inactive  memory  : 28022272 ≈ 26.7241MB    small_pool(3)   large_pool(7)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14755315712 ≈ 14071.7656MB
+
+count_memory_stats 38: /home/tglite/examples/tgn/tgn.py at line 70
+operation requested memory  :   8770000 ≈ 8.3637MB
+operation allocated memory  :   8770048 ≈ 8.3638MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14757280768 ≈ 14073.6396MB    small_pool(30)   large_pool(20)
+total     inactive  memory  : 19252224 ≈ 18.3604MB    small_pool(3)   large_pool(7)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14746623488 ≈ 14063.4761MB
+
+count_memory_stats 39: /home/tglite/examples/tgn/tgn.py at line 80
+operation requested memory  : -8770000 ≈ -8.3637MB
+operation allocated memory  : -8692224 ≈ -8.2896MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748588544 ≈ 14065.3501MB    small_pool(30)   large_pool(20)
+total     inactive  memory  : 27944448 ≈ 26.6499MB    small_pool(3)   large_pool(6)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14746623488 ≈ 14063.4761MB
+
+count_memory_stats 40: /home/tglite/python/tglite/nn.py at line 136
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748588544 ≈ 14065.3501MB    small_pool(30)   large_pool(20)
+total     inactive  memory  : 27944448 ≈ 26.6499MB    small_pool(3)   large_pool(6)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14746623488 ≈ 14063.4761MB
+
+count_memory_stats 41: /home/tglite/python/tglite/nn.py at line 79
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748588544 ≈ 14065.3501MB    small_pool(30)   large_pool(20)
+total     inactive  memory  : 27944448 ≈ 26.6499MB    small_pool(3)   large_pool(6)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14746623488 ≈ 14063.4761MB
+
+count_memory_stats 42: /home/tglite/python/tglite/mymodule.py at line 43
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748588544 ≈ 14065.3501MB    small_pool(30)   large_pool(20)
+total     inactive  memory  : 27944448 ≈ 26.6499MB    small_pool(3)   large_pool(6)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14746623488 ≈ 14063.4761MB
+
+count_memory_stats 43: /home/tglite/python/tglite/nn.py at line 81
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14748588544 ≈ 14065.3501MB    small_pool(30)   large_pool(20)
+total     inactive  memory  : 27944448 ≈ 26.6499MB    small_pool(3)   large_pool(6)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14748632576 ≈ 14065.3921MB
+
+count_memory_stats 44: /home/tglite/python/tglite/nn.py at line 83
+operation requested memory  :   1614800 ≈ 1.5400MB
+operation allocated memory  :   2009088 ≈ 1.9160MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14750597632 ≈ 14067.2661MB    small_pool(30)   large_pool(21)
+total     inactive  memory  : 25935360 ≈ 24.7339MB    small_pool(3)   large_pool(5)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14748632576 ≈ 14065.3921MB
+
+count_memory_stats 45: /home/tglite/python/tglite/nn.py at line 138
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14750597632 ≈ 14067.2661MB    small_pool(30)   large_pool(21)
+total     inactive  memory  : 25935360 ≈ 24.7339MB    small_pool(3)   large_pool(5)
+cur small_pool   1965056 ≈ 1.8740MB
+cur large_pool 14748632576 ≈ 14065.3921MB
+
+count_memory_stats 46: /home/tglite/python/tglite/nn.py at line 141
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14750597632 ≈ 14067.2661MB    small_pool(30)   large_pool(21)
+total     inactive  memory  : 25935360 ≈ 24.7339MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14748632576 ≈ 14065.3921MB
+
+count_memory_stats 47: /home/tglite/python/tglite/op.py at line 408
+operation requested memory  :     71552 ≈ 0.0682MB
+operation allocated memory  :     71680 ≈ 0.0684MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14750669312 ≈ 14067.3345MB    small_pool(31)   large_pool(21)
+total     inactive  memory  : 25863680 ≈ 24.6655MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14748632576 ≈ 14065.3921MB
+
+count_memory_stats 48: /home/tglite/python/tglite/nn.py at line 79
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14750669312 ≈ 14067.3345MB    small_pool(31)   large_pool(21)
+total     inactive  memory  : 25863680 ≈ 24.6655MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14748632576 ≈ 14065.3921MB
+
+count_memory_stats 49: /home/tglite/python/tglite/mymodule.py at line 47
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14750669312 ≈ 14067.3345MB    small_pool(31)   large_pool(21)
+total     inactive  memory  : 25863680 ≈ 24.6655MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14755787776 ≈ 14072.2158MB
+
+count_memory_stats 50: /home/tglite/python/tglite/nn.py at line 81
+operation requested memory  :   7155200 ≈ 6.8237MB
+operation allocated memory  :   7155200 ≈ 6.8237MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14776532992 = 14092MB    small_pool(2)   large_pool(16)
+total     active    memory  : 14757824512 ≈ 14074.1582MB    small_pool(31)   large_pool(22)
+total     inactive  memory  : 18708480 ≈ 17.8418MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14762942976 ≈ 14079.0396MB
+
+count_memory_stats 51: /home/tglite/python/tglite/nn.py at line 83
+operation requested memory  :   7155200 ≈ 6.8237MB
+operation allocated memory  :   7155200 ≈ 6.8237MB
+operation reserved  memory  :      20971520 = 20MB    new segment belong to large pool
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14764979712 ≈ 14080.9819MB    small_pool(31)   large_pool(23)
+total     inactive  memory  : 32524800 ≈ 31.0181MB    small_pool(3)   large_pool(6)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14762942976 ≈ 14079.0396MB
+
+count_memory_stats 52: /home/tglite/python/tglite/nn.py at line 143
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14764979712 ≈ 14080.9819MB    small_pool(31)   large_pool(23)
+total     inactive  memory  : 32524800 ≈ 31.0181MB    small_pool(3)   large_pool(6)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14762942976 ≈ 14079.0396MB
+
+count_memory_stats 53: /home/tglite/python/tglite/nn.py at line 148
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14764979712 ≈ 14080.9819MB    small_pool(31)   large_pool(23)
+total     inactive  memory  : 32524800 ≈ 31.0181MB    small_pool(3)   large_pool(6)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14766624768 ≈ 14082.5508MB
+
+count_memory_stats 54: /home/tglite/python/tglite/nn.py at line 150
+operation requested memory  :   3229600 ≈ 3.0800MB
+operation allocated memory  :   3681792 ≈ 3.5112MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14768661504 ≈ 14084.4932MB    small_pool(31)   large_pool(24)
+total     inactive  memory  : 28843008 ≈ 27.5068MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14766624768 ≈ 14082.5508MB
+
+count_memory_stats 55: /home/tglite/python/tglite/nn.py at line 152
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14768661504 ≈ 14084.4932MB    small_pool(31)   large_pool(24)
+total     inactive  memory  : 28843008 ≈ 27.5068MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14793887744 ≈ 14108.5508MB
+
+count_memory_stats 56: /home/tglite/python/tglite/nn.py at line 154
+operation requested memory  : 26617344 ≈ 25.3843MB
+operation allocated memory  :      27262976 = 26MB
+operation reserved  memory  :      27262976 = 26MB    new segment belong to large pool
+total     reserved  memory  : 14824767488 = 14138MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14795924480 ≈ 14110.4932MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 28843008 ≈ 27.5068MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14784723456 ≈ 14099.8110MB
+
+count_memory_stats 57: /home/tglite/python/tglite/nn.py at line 160
+operation requested memory  : -8770000 ≈ -8.3637MB
+operation allocated memory  : -9164288 ≈ -8.7397MB
+operation reserved  memory  :    -20971520 = -20MB    new segments belongs to 0 small pools, -1 large pools
+total     reserved  memory  : 14803795968 = 14118MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14786760192 ≈ 14101.7534MB    small_pool(31)   large_pool(23)
+total     inactive  memory  : 17035776 ≈ 16.2466MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14784723456 ≈ 14099.8110MB
+
+count_memory_stats 58: /home/tglite/python/tglite/nn.py at line 162
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14803795968 = 14118MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14786760192 ≈ 14101.7534MB    small_pool(31)   large_pool(23)
+total     inactive  memory  : 17035776 ≈ 16.2466MB    small_pool(3)   large_pool(5)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14786732544 ≈ 14101.7271MB
+
+count_memory_stats 59: /home/tglite/python/tglite/nn.py at line 164
+operation requested memory  :   1614800 ≈ 1.5400MB
+operation allocated memory  :   2009088 ≈ 1.9160MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14803795968 = 14118MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14788769280 ≈ 14103.6694MB    small_pool(31)   large_pool(24)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14801412608 ≈ 14115.7271MB
+
+count_memory_stats 60: /home/tglite/python/tglite/nn.py at line 166
+operation requested memory  : 14310400 ≈ 13.6475MB
+operation allocated memory  :      14680064 = 14MB
+operation reserved  memory  :      14680064 = 14MB    new segment belong to large pool
+total     reserved  memory  : 14818476032 = 14132MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14803449344 ≈ 14117.6694MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14801412608 ≈ 14115.7271MB
+
+count_memory_stats 61: /home/tglite/python/tglite/nn.py at line 170
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14818476032 = 14132MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14803449344 ≈ 14117.6694MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14801412608 ≈ 14115.7271MB
+
+count_memory_stats 62: /home/tglite/python/tglite/nn.py at line 172
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14818476032 = 14132MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14803449344 ≈ 14117.6694MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14801412608 ≈ 14115.7271MB
+
+count_memory_stats 63: /home/tglite/python/tglite/nn.py at line 174
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14818476032 = 14132MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14803449344 ≈ 14117.6694MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14801412608 ≈ 14115.7271MB
+
+count_memory_stats 64: /home/tglite/python/tglite/nn.py at line 176
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14818476032 = 14132MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14803449344 ≈ 14117.6694MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14801412608 ≈ 14115.7271MB
+
+count_memory_stats 65: /home/tglite/python/tglite/nn.py at line 178
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14818476032 = 14132MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14803449344 ≈ 14117.6694MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14801412608 ≈ 14115.7271MB
+
+count_memory_stats 66: /home/tglite/python/tglite/nn.py at line 183
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14818476032 = 14132MB    small_pool(2)   large_pool(18)
+total     active    memory  : 14803449344 ≈ 14117.6694MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 15026688 ≈ 14.3306MB    small_pool(3)   large_pool(4)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 67: /home/tglite/python/tglite/nn.py at line 185
+operation requested memory  :   5540400 ≈ 5.2837MB
+operation allocated memory  :   5146112 ≈ 4.9077MB
+operation reserved  memory  :      20971520 = 20MB    new segment belong to large pool
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14808595456 ≈ 14122.5771MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 30852096 ≈ 29.4229MB    small_pool(3)   large_pool(6)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 68: /home/tglite/python/tglite/nn.py at line 187
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14808595456 ≈ 14122.5771MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 30852096 ≈ 29.4229MB    small_pool(3)   large_pool(6)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 69: /home/tglite/python/tglite/nn.py at line 189
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14808595456 ≈ 14122.5771MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 30852096 ≈ 29.4229MB    small_pool(3)   large_pool(6)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 70: /home/tglite/python/tglite/nn.py at line 192
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14808595456 ≈ 14122.5771MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 30852096 ≈ 29.4229MB    small_pool(3)   large_pool(6)
+cur small_pool   2036736 ≈ 1.9424MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 71: /home/tglite/python/tglite/nn.py at line 194
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14808595456 ≈ 14122.5771MB    small_pool(31)   large_pool(25)
+total     inactive  memory  : 30852096 ≈ 29.4229MB    small_pool(3)   large_pool(6)
+cur small_pool   2180096 ≈ 2.0791MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 72: /home/tglite/python/tglite/nn.py at line 201
+operation requested memory  :    143104 ≈ 0.1365MB
+operation allocated memory  :    143360 ≈ 0.1367MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14808738816 ≈ 14122.7139MB    small_pool(32)   large_pool(25)
+total     inactive  memory  : 30708736 ≈ 29.2861MB    small_pool(3)   large_pool(6)
+cur small_pool   2323456 ≈ 2.2158MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 73: /home/tglite/python/tglite/nn.py at line 205
+operation requested memory  :    143104 ≈ 0.1365MB
+operation allocated memory  :    143360 ≈ 0.1367MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14808882176 ≈ 14122.8506MB    small_pool(33)   large_pool(25)
+total     inactive  memory  : 30565376 ≈ 29.1494MB    small_pool(3)   large_pool(6)
+cur small_pool   3326464 ≈ 3.1724MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 74: /home/tglite/python/tglite/nn.py at line 209
+operation requested memory  :   1001728 ≈ 0.9553MB
+operation allocated memory  :   1003008 ≈ 0.9565MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14809885184 ≈ 14123.8071MB    small_pool(39)   large_pool(25)
+total     inactive  memory  : 29562368 ≈ 28.1929MB    small_pool(5)   large_pool(6)
+cur small_pool   3362304 ≈ 3.2065MB
+cur large_pool 14806558720 ≈ 14120.6348MB
+
+count_memory_stats 75: /home/tglite/python/tglite/nn.py at line 212
+operation requested memory  :     35776 ≈ 0.0341MB
+operation allocated memory  :     35840 ≈ 0.0342MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14809921024 ≈ 14123.8413MB    small_pool(40)   large_pool(25)
+total     inactive  memory  : 29526528 ≈ 28.1587MB    small_pool(4)   large_pool(6)
+cur small_pool   3362304 ≈ 3.2065MB
+cur large_pool 14813713920 ≈ 14127.4585MB
+
+count_memory_stats 76: /home/tglite/python/tglite/nn.py at line 215
+operation requested memory  :   7155200 ≈ 6.8237MB
+operation allocated memory  :   7155200 ≈ 6.8237MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14817076224 ≈ 14130.6650MB    small_pool(40)   large_pool(26)
+total     inactive  memory  : 22371328 ≈ 21.3350MB    small_pool(4)   large_pool(6)
+cur small_pool   3362304 ≈ 3.2065MB
+cur large_pool 14813713920 ≈ 14127.4585MB
+
+count_memory_stats 77: /home/tglite/python/tglite/nn.py at line 217
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14817076224 ≈ 14130.6650MB    small_pool(40)   large_pool(26)
+total     inactive  memory  : 22371328 ≈ 21.3350MB    small_pool(4)   large_pool(6)
+cur small_pool   3362304 ≈ 3.2065MB
+cur large_pool 14808567808 ≈ 14122.5508MB
+
+count_memory_stats 78: /home/tglite/python/tglite/nn.py at line 221
+operation requested memory  : -5540400 ≈ -5.2837MB
+operation allocated memory  : -5146112 ≈ -4.9077MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14811930112 ≈ 14125.7573MB    small_pool(40)   large_pool(26)
+total     inactive  memory  : 27517440 ≈ 26.2427MB    small_pool(4)   large_pool(5)
+cur small_pool   3362304 ≈ 3.2065MB
+cur large_pool 14809788416 ≈ 14123.7148MB
+
+count_memory_stats 79: /home/tglite/python/tglite/nn.py at line 223
+operation requested memory  :   1614800 ≈ 1.5400MB
+operation allocated memory  :   1220608 ≈ 1.1641MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14813150720 ≈ 14126.9214MB    small_pool(40)   large_pool(26)
+total     inactive  memory  : 26296832 ≈ 25.0786MB    small_pool(4)   large_pool(6)
+cur small_pool   3362304 ≈ 3.2065MB
+cur large_pool 14811797504 ≈ 14125.6309MB
+
+count_memory_stats 80: /home/tglite/python/tglite/nn.py at line 229
+operation requested memory  :   1614800 ≈ 1.5400MB
+operation allocated memory  :   2009088 ≈ 1.9160MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14815159808 ≈ 14128.8374MB    small_pool(40)   large_pool(27)
+total     inactive  memory  : 24287744 ≈ 23.1626MB    small_pool(4)   large_pool(5)
+cur small_pool   3766272 ≈ 3.5918MB
+cur large_pool 14811403264 ≈ 14125.2549MB
+
+count_memory_stats 81: /home/tglite/python/tglite/nn.py at line 231
+operation requested memory  :    403700 ≈ 0.3850MB
+operation allocated memory  :      9728 ≈ 0.0093MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14815169536 ≈ 14128.8467MB    small_pool(41)   large_pool(27)
+total     inactive  memory  : 24278016 ≈ 23.1533MB    small_pool(4)   large_pool(6)
+cur small_pool   3799040 ≈ 3.6230MB
+cur large_pool 14813412352 ≈ 14127.1709MB
+
+count_memory_stats 82: /home/tglite/python/tglite/nn.py at line 233
+operation requested memory  :   1647096 ≈ 1.5708MB
+operation allocated memory  :   2041856 ≈ 1.9473MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14839447552 = 14152MB    small_pool(2)   large_pool(19)
+total     active    memory  : 14817211392 ≈ 14130.7939MB    small_pool(43)   large_pool(28)
+total     inactive  memory  : 22236160 ≈ 21.2061MB    small_pool(4)   large_pool(5)
+cur small_pool   3408384 ≈ 3.2505MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 83: /home/tglite/examples/tgn/tgn.py at line 88
+operation requested memory  : -53906200 ≈ -51.4090MB
+operation allocated memory  : -55375872 ≈ -52.8105MB
+operation reserved  memory  :    -46137344 = -44MB    new segments belongs to 0 small pools, -2 large pools
+total     reserved  memory  : 14793310208 = 14108MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14761835520 ≈ 14077.9834MB    small_pool(40)   large_pool(24)
+total     inactive  memory  : 31474688 ≈ 30.0166MB    small_pool(5)   large_pool(7)
+cur small_pool   3408384 ≈ 3.2505MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 84: /home/tglite/examples/tgn/tgn.py at line 90
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14793310208 = 14108MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14761835520 ≈ 14077.9834MB    small_pool(40)   large_pool(24)
+total     inactive  memory  : 31474688 ≈ 30.0166MB    small_pool(5)   large_pool(7)
+cur small_pool   3408384 ≈ 3.2505MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 85: /home/tglite/examples/support.py at line 117
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14793310208 = 14108MB    small_pool(2)   large_pool(17)
+total     active    memory  : 14761835520 ≈ 14077.9834MB    small_pool(40)   large_pool(24)
+total     inactive  memory  : 31474688 ≈ 30.0166MB    small_pool(5)   large_pool(7)
+cur small_pool   4008448 ≈ 3.8228MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 86: /home/tglite/examples/support.py at line 120
+operation requested memory  :    600000 ≈ 0.5722MB
+operation allocated memory  :    600064 ≈ 0.5723MB
+operation reserved  memory  :        2097152 = 2MB    new segment belong to small pool
+total     reserved  memory  : 14795407360 = 14110MB    small_pool(3)   large_pool(17)
+total     active    memory  : 14762435584 ≈ 14078.5557MB    small_pool(41)   large_pool(24)
+total     inactive  memory  : 32971776 ≈ 31.4443MB    small_pool(6)   large_pool(7)
+cur small_pool   4608512 ≈ 4.3950MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 87: /home/tglite/examples/support.py at line 123
+operation requested memory  :    600000 ≈ 0.5722MB
+operation allocated memory  :    600064 ≈ 0.5723MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14795407360 = 14110MB    small_pool(3)   large_pool(17)
+total     active    memory  : 14763035648 ≈ 14079.1279MB    small_pool(42)   large_pool(24)
+total     inactive  memory  : 32371712 ≈ 30.8721MB    small_pool(6)   large_pool(7)
+cur small_pool   5208576 ≈ 4.9673MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 88: /home/tglite/examples/support.py at line 125
+operation requested memory  :    600000 ≈ 0.5722MB
+operation allocated memory  :    600064 ≈ 0.5723MB
+operation reserved  memory  :        2097152 = 2MB    new segment belong to small pool
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763635712 ≈ 14079.7002MB    small_pool(43)   large_pool(24)
+total     inactive  memory  : 33868800 ≈ 32.2998MB    small_pool(7)   large_pool(7)
+cur small_pool   4014592 ≈ 3.8286MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 89: /home/tglite/examples/tgn/tgn.py at line 93
+operation requested memory  : -1194000 ≈ -1.1387MB
+operation allocated memory  : -1193984 ≈ -1.1387MB
+operation reserved  memory  :      -2097152 = -2MB    new segments belongs to -1 small pools, 0 large pools
+total     reserved  memory  : 14795407360 = 14110MB    small_pool(3)   large_pool(17)
+total     active    memory  : 14762441728 ≈ 14078.5615MB    small_pool(42)   large_pool(24)
+total     inactive  memory  : 32965632 ≈ 31.4385MB    small_pool(6)   large_pool(7)
+cur small_pool   4014592 ≈ 3.8286MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 90: /home/tglite/examples/tgn/tgn.py at line 95
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14795407360 = 14110MB    small_pool(3)   large_pool(17)
+total     active    memory  : 14762441728 ≈ 14078.5615MB    small_pool(42)   large_pool(24)
+total     inactive  memory  : 32965632 ≈ 31.4385MB    small_pool(6)   large_pool(7)
+cur small_pool   4014592 ≈ 3.8286MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 91: /home/tglite/examples/support.py at line 117
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14795407360 = 14110MB    small_pool(3)   large_pool(17)
+total     active    memory  : 14762441728 ≈ 14078.5615MB    small_pool(42)   large_pool(24)
+total     inactive  memory  : 32965632 ≈ 31.4385MB    small_pool(6)   large_pool(7)
+cur small_pool   4614656 ≈ 4.4009MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 92: /home/tglite/examples/support.py at line 120
+operation requested memory  :    600000 ≈ 0.5722MB
+operation allocated memory  :    600064 ≈ 0.5723MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14795407360 = 14110MB    small_pool(3)   large_pool(17)
+total     active    memory  : 14763041792 ≈ 14079.1338MB    small_pool(43)   large_pool(24)
+total     inactive  memory  : 32365568 ≈ 30.8662MB    small_pool(6)   large_pool(7)
+cur small_pool   5214720 ≈ 4.9731MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 93: /home/tglite/examples/support.py at line 123
+operation requested memory  :    600000 ≈ 0.5722MB
+operation allocated memory  :    600064 ≈ 0.5723MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14795407360 = 14110MB    small_pool(3)   large_pool(17)
+total     active    memory  : 14763641856 ≈ 14079.7061MB    small_pool(44)   large_pool(24)
+total     inactive  memory  : 31765504 ≈ 30.2939MB    small_pool(6)   large_pool(7)
+cur small_pool   5814784 ≈ 5.5454MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 94: /home/tglite/examples/support.py at line 125
+operation requested memory  :    600000 ≈ 0.5722MB
+operation allocated memory  :    600064 ≈ 0.5723MB
+operation reserved  memory  :        2097152 = 2MB    new segment belong to small pool
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14764241920 ≈ 14080.2783MB    small_pool(45)   large_pool(24)
+total     inactive  memory  : 33262592 ≈ 31.7217MB    small_pool(8)   large_pool(7)
+cur small_pool   4620800 ≈ 4.4067MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 95: /home/tglite/examples/tgn/tgn.py at line 97
+operation requested memory  : -1194000 ≈ -1.1387MB
+operation allocated memory  : -1193984 ≈ -1.1387MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763047936 ≈ 14079.1396MB    small_pool(44)   large_pool(24)
+total     inactive  memory  : 34456576 ≈ 32.8604MB    small_pool(8)   large_pool(7)
+cur small_pool   4620800 ≈ 4.4067MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 96: /home/tglite/examples/tgn/tgn.py at line 106
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763047936 ≈ 14079.1396MB    small_pool(44)   large_pool(24)
+total     inactive  memory  : 34456576 ≈ 32.8604MB    small_pool(8)   large_pool(7)
+cur small_pool   4620800 ≈ 4.4067MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 97: /home/tglite/examples/tgn/tgn.py at line 157
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763047936 ≈ 14079.1396MB    small_pool(44)   large_pool(24)
+total     inactive  memory  : 34456576 ≈ 32.8604MB    small_pool(8)   large_pool(7)
+cur small_pool   4668928 ≈ 4.4526MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 98: /home/tglite/examples/tgn/tgn.py at line 162
+operation requested memory  :     48000 ≈ 0.0458MB
+operation allocated memory  :     48128 ≈ 0.0459MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763096064 ≈ 14079.1855MB    small_pool(46)   large_pool(24)
+total     inactive  memory  : 34408448 ≈ 32.8145MB    small_pool(8)   large_pool(7)
+cur small_pool   4658688 ≈ 4.4429MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 99: /home/tglite/examples/tgn/tgn.py at line 165
+operation requested memory  :   -11040 ≈ -0.0105MB
+operation allocated memory  :   -10240 ≈ -0.0098MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763085824 ≈ 14079.1758MB    small_pool(49)   large_pool(24)
+total     inactive  memory  : 34418688 ≈ 32.8242MB    small_pool(8)   large_pool(7)
+cur small_pool   5203968 ≈ 4.9629MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 100: /home/tglite/examples/tgn/tgn.py at line 173
+operation requested memory  :    544320 ≈ 0.5191MB
+operation allocated memory  :    545280 ≈ 0.5200MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763631104 ≈ 14079.6958MB    small_pool(53)   large_pool(24)
+total     inactive  memory  : 33873408 ≈ 32.3042MB    small_pool(8)   large_pool(7)
+cur small_pool   5205504 ≈ 4.9644MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 101: /home/tglite/examples/tgn/tgn.py at line 177
+operation requested memory  :      1440 ≈ 0.0014MB
+operation allocated memory  :      1536 ≈ 0.0015MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763632640 ≈ 14079.6973MB    small_pool(54)   large_pool(24)
+total     inactive  memory  : 33871872 ≈ 32.3027MB    small_pool(8)   large_pool(7)
+cur small_pool   5205504 ≈ 4.9644MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 102: /home/tglite/examples/tgn/tgn.py at line 180
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763632640 ≈ 14079.6973MB    small_pool(54)   large_pool(24)
+total     inactive  memory  : 33871872 ≈ 32.3027MB    small_pool(8)   large_pool(7)
+cur small_pool   4620800 ≈ 4.4067MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 103: /home/tglite/examples/tgn/tgn.py at line 108
+operation requested memory  :  -582720 ≈ -0.5557MB
+operation allocated memory  :  -584704 ≈ -0.5576MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763047936 ≈ 14079.1396MB    small_pool(44)   large_pool(24)
+total     inactive  memory  : 34456576 ≈ 32.8604MB    small_pool(8)   large_pool(7)
+cur small_pool   4620800 ≈ 4.4067MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 104: /home/tglite/examples/support.py at line 188
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763047936 ≈ 14079.1396MB    small_pool(44)   large_pool(24)
+total     inactive  memory  : 34456576 ≈ 32.8604MB    small_pool(8)   large_pool(7)
+cur small_pool   4620800 ≈ 4.4067MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 105: /home/tglite/examples/support.py at line 193
+operation requested memory  :              0 = 0MB
+operation allocated memory  :              0 = 0MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763047936 ≈ 14079.1396MB    small_pool(44)   large_pool(24)
+total     inactive  memory  : 34456576 ≈ 32.8604MB    small_pool(8)   large_pool(7)
+cur small_pool   4645888 ≈ 4.4307MB
+cur large_pool 14758427136 ≈ 14074.7329MB
+
+count_memory_stats 106: /home/tglite/examples/support.py at line 206
+operation requested memory  :     24004 ≈ 0.0229MB
+operation allocated memory  :     25088 ≈ 0.0239MB
+operation reserved  memory  :              0 = 0MB    no new segment
+total     reserved  memory  : 14797504512 = 14112MB    small_pool(4)   large_pool(17)
+total     active    memory  : 14763073024 ≈ 14079.1636MB    small_pool(47)   large_pool(24)
+total     inactive  memory  : 34431488 ≈ 32.8364MB    small_pool(8)   large_pool(7)
+cur small_pool   2650624 ≈ 2.5278MB
+cur large_pool 14527024128 ≈ 13854.0498MB
+
+count_memory_stats 107: /home/tglite/examples/support.py at line 209
+operation requested memory  : -229078524 ≈ -218.4663MB
+operation allocated memory  : -233398272 ≈ -222.5859MB
+operation reserved  memory  :  -224395264 = -214MB    new segments belongs to -2 small pools, -8 large pools
+total     reserved  memory  : 14573109248 = 13898MB    small_pool(2)   large_pool(9)
+total     active    memory  : 14529674752 ≈ 13856.5776MB    small_pool(53)   large_pool(10)
+total     inactive  memory  : 43434496 ≈ 41.4224MB    small_pool(7)   large_pool(8)
+cur-batch memory 13859.06982421875
+max-batch memory 14132.74462890625
+batch 1:
+cur small_pool   3957248 ≈ 3.7739MB
+cur large_pool 14527024128 ≈ 13854.0498MB

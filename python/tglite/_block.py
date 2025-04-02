@@ -358,9 +358,30 @@ class TBlock(object):
         with nvtx.annotate("time_deltas", color="green"):
             with nvtx.annotate("time_deltas _check_has_nbrs", color="red"):
                 self._check_has_nbrs()
-            with nvtx.annotate("time_deltas dts", color="green"): # 1.cpu计算1ms+传输和gpu计算 tradeoff？ 2.mem.cell kernel低效和async的memcpy有关吗？
+            with nvtx.annotate("time_deltas dts", color="green"): # 1.cpu计算1ms+传输和gpu计算 tradeoff？ 2.mem.cell kernel低效和async的memcpy有关吗？(纯计算长只是因为算的多)
                 dts = self._dsttimes[self._dstindex]
-            dts = dts - self._ets
+                # print(f"self._dstindex {self._dstindex.shape}")
+                # print(f"self._dstindex {self._dstindex}")
+                # print()
+            dts = dts - self._ets # 只处理去冗余的ets 也能节约load / on CPU or GPU? / 总之先处理掉unique 的开销
+            dev = self._g.compute_device()
+            with nvtx.annotate("time_deltas dts.to", color="green"):
+                return torch.from_numpy(dts).to(device=dev, dtype=torch.float)
+            
+    def time_deltas_uniqLoad(self) -> Tensor: # TODO 还没有被调用过
+        """Computes the timestamp differences between destination nodes (used for sampling) and edges and returns
+        them as a tensor in pre-defined TGraph's computation device.
+        
+        :return: A tensor containing the time deltas.
+        """
+        if self._g.storage_device() != torch.device("cpu"):
+            return (self._g_dsttimes[self._g_dstindex] - self._g_ets)
+        with nvtx.annotate("time_deltas", color="green"):
+            with nvtx.annotate("time_deltas _check_has_nbrs", color="red"):
+                self._check_has_nbrs()
+            with nvtx.annotate("time_deltas dts", color="green"): # 1.cpu计算1ms+传输和gpu计算 tradeoff？ 2.mem.cell kernel低效和async的memcpy有关吗？(纯计算长只是因为算的多)
+                dts = self._dsttimes[self._dstindex]
+            dts = dts - self._ets # 只处理去冗余的ets 也能节约load / on CPU or GPU? / 总之先处理掉unique 的开销
             dev = self._g.compute_device()
             with nvtx.annotate("time_deltas dts.to", color="green"):
                 return torch.from_numpy(dts).to(device=dev, dtype=torch.float)
@@ -379,7 +400,7 @@ class TBlock(object):
                     self._check_has_nbrs()
             with nvtx.annotate("blk.apply fn", color="red"):
                 output = fn(self)
-            with nvtx.annotate("blk.apply run_hooks", color="green"):
+            with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                 if run_hooks:
                     output = self.run_hooks(output)
                 return output
@@ -468,6 +489,194 @@ class TBlock(object):
             data = feat[idx.to(sdev)].to(cdev)
         tt.t_prep_input += tt.elapsed(t_start)
         return data
+    
+    def _load_efeat0_uniqLoadFeat_alreadyOnGPU(self, unique_eids, _reverse_eids, _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True):
+        """Loads the edge features to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_efeat0_uniqLoadFeat_alreadyOnGPU", color="red"):
+            # print(f"in _load_efeat0_uniqLoadFeat self._eid.device {torch.tensor(self._eid).device}") # TODO 联合采样将_eid转为tensor GPU上应该会更快，目前on CPU
+            # with nvtx.annotate("torch.unique", color="red"):
+            #     unique_eid, inverse_indices = torch.unique(torch.tensor(self._eid).to("cuda"), return_inverse=True)
+            # unique_eids = unique_eids.to(unique_eid.dtype)
+            # assert torch.allclose(unique_eid, unique_eids.to("cuda"))
+            # assert torch.allclose(inverse_indices, _reverse_eids.to("cuda"))
+            if self._c_efeat is None and self._g.efeat is not None:
+                with nvtx.annotate("_block _load_feat0_uniqLoadEFeat", color="red"):
+                    # TODO 需要额外解决read amplification
+                    with nvtx.annotate("_block _load_feat0_uniqLoadNFeat", color="red"):
+                        cpu_efeat = self._load_feat0_uniqLoadEFeat2(
+                            self._g.efeat, _eids_cpu, use_pin,
+                            self._ctx._get_efeat_pin) # TODO 可以不在这重建
+                    # 构成完整本轮batch使用的efeat
+                    self._c_efeat = torch.empty((unique_eids.shape[0], cpu_efeat.shape[1]), device="cuda")
+                    self._c_efeat[_idx_eids_cpu] = cpu_efeat
+                    if _idx_eids_pre.shape[0] != 0:
+                        self._c_efeat[_idx_eids_pre] = self._ctx._pre_nxt_efeat # 意为preload nxt batch efeat
+                    # 下个batch会用到的efeat
+                    self._ctx._pre_nxt_efeat = self._c_efeat[_idx_eids_nxt]
+                    # no scatter
+                    # self._c_efeat = self._c_efeat[_reverse_eids]
+
+                    # efeat = self._load_feat0_uniqLoadFeat(
+                    #     self._g.efeat, unique_eid.to("cpu"), use_pin,
+                    #     self._ctx._get_efeat_pin)[inverse_indices] # TODO 可以不在这重建
+                    # assert torch.allclose(efeat, self._c_efeat) # \O/ test success!
+
+    def _load_nfeat0_uniqLoadFeat_alreadyOnGPU(self, _unique_nids, _reverse_nids, _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, _nids_nxt, _idx_nids_nxt, use_pin=True):
+        """Loads the node features to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_nfeat0_uniqLoadFeat_alreadyOnGPU", color="red"):
+            # print(f"in _load_nfeat0_uniqLoadFeat self.allnodes().device {self.allnodes().device}") # TODO 联合采样将_nid转为tensor GPU上应该会更快，目前on CPU
+            # with nvtx.annotate("torch.unique", color="red"):
+            #    unique_allnodes, inverse_indices = torch.unique(self.allnodes().to("cuda"), return_inverse=True)
+            # _unique_nids = _unique_nids.to(unique_allnodes.dtype)
+            # assert torch.allclose(unique_allnodes, _unique_nids)
+            # assert torch.allclose(inverse_indices, _reverse_nids)
+            if self._c_nfeat is None and self._g.nfeat is not None:
+                # TODO 需要额外解决read amplification
+                with nvtx.annotate("_block _load_feat0_uniqLoadNFeat", color="red"):
+                    cpu_nfeat = self._load_feat0_uniqLoadNFeat2(
+                        self._g.nfeat, _nids_cpu, use_pin,
+                        self._ctx._get_nfeat_pin) # TODO 可以不在这重建
+                # 构成完整本轮batch使用的nfeat
+                self._c_nfeat = torch.empty((_unique_nids.shape[0], cpu_nfeat.shape[1]), device="cuda")
+                self._c_nfeat[_idx_nids_cpu] = cpu_nfeat
+                if _idx_nids_pre.shape[0] != 0:
+                    self._c_nfeat[_idx_nids_pre] = self._ctx._pre_nxt_nfeat
+                # 下个batch会用到的nfeat
+                self._ctx._pre_nxt_nfeat = self._c_nfeat[_idx_nids_nxt]
+                # no scatter
+                # self._c_nfeat = self._c_nfeat[_reverse_nids] # 分别算出重建dstnodes的reverse_dst_nids和重建srcnodes的reverse_src_nids # 最后写statistic逻辑
+
+    def _load_efeat0_uniqLoadFeat(self, use_pin=True):
+        """Loads the edge features to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_efeat0_uniqLoadFeat", color="red"):
+            # print(f"in _load_efeat0_uniqLoadFeat self._eid.device {torch.tensor(self._eid).device}") # TODO 联合采样将_eid转为tensor GPU上应该会更快，目前on CPU
+            unique_eid, inverse_indices = torch.unique(torch.tensor(self._eid), return_inverse=True)
+            if self._c_efeat is None and self._g.efeat is not None:
+                self._c_efeat = self._load_feat0_uniqLoadFeat(
+                    self._g.efeat, unique_eid, use_pin,
+                    self._ctx._get_efeat_pin)[inverse_indices] # TODO 可以不在这重建
+
+    def _load_nfeat0_uniqLoadFeat(self, use_pin=True):
+        """Loads the node features to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_nfeat0_uniqLoadFeat", color="red"):
+            # print(f"in _load_nfeat0_uniqLoadFeat self.allnodes().device {self.allnodes().device}") # TODO 联合采样将_eid转为tensor GPU上应该会更快，目前on CPU
+            unique_allnodes, inverse_indices = torch.unique(self.allnodes(), return_inverse=True)
+            if self._c_nfeat is None and self._g.nfeat is not None:
+                self._c_nfeat = self._load_feat0_uniqLoadFeat(
+                    self._g.nfeat, unique_allnodes, use_pin,
+                    self._ctx._get_nfeat_pin)[inverse_indices] # TODO 可以不在这重建
+    
+    # preload0_uniqLoadFeat2
+    def _load_feat0_uniqLoadNFeat2(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
+        """Loads selected feature data from the TGraph's storage device to computation device.
+
+        :param Tensor feat: Feature tensor.
+        :param np.ndarray idx: The indices of selected features.
+        :param bool use_pin: Whether to use pinned memory, only applicable when the storage device is cpu and the computation device.
+        is cuda.
+        :param Callable pin_getter: Function to get the pinned buffer.
+        :return: A tensor containing the loaded feature data.
+        """
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        t_start = tt.start()
+        cdev = self._g.compute_device()
+        # pin = pin_getter(self.layer, len(idx), feat.shape[1])
+        # with nvtx.annotate("index_select", color="red"):
+        #     torch.index_select(feat, 0, idx, out=pin)
+        # data = pin.to(cdev, non_blocking=True)
+        data = self._ctx._cur_nfeat_pins.to(cdev, non_blocking=True)
+        self._ctx._cur_nfeat_pins = None
+        tt.t_prep_input += tt.elapsed(t_start)
+        return data
+    
+    # preload0_uniqLoadFeat2
+    def _load_feat0_uniqLoadEFeat2(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
+        """Loads selected feature data from the TGraph's storage device to computation device.
+
+        :param Tensor feat: Feature tensor.
+        :param np.ndarray idx: The indices of selected features.
+        :param bool use_pin: Whether to use pinned memory, only applicable when the storage device is cpu and the computation device.
+        is cuda.
+        :param Callable pin_getter: Function to get the pinned buffer.
+        :return: A tensor containing the loaded feature data.
+        """
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        t_start = tt.start()
+        cdev = self._g.compute_device()
+        data = self._ctx._cur_efeat_pins.to(cdev, non_blocking=True)
+        self._ctx._cur_efeat_pins = None
+        tt.t_prep_input += tt.elapsed(t_start)
+        return data
+    
+    # preload0_uniqLoadFeat
+    def _load_feat0_uniqLoadFeat(self, feat: Tensor, idx: Tensor, use_pin: bool, pin_getter: Callable) -> Tensor:
+        """Loads selected feature data from the TGraph's storage device to computation device.
+
+        :param Tensor feat: Feature tensor.
+        :param np.ndarray idx: The indices of selected features.
+        :param bool use_pin: Whether to use pinned memory, only applicable when the storage device is cpu and the computation device.
+        is cuda.
+        :param Callable pin_getter: Function to get the pinned buffer.
+        :return: A tensor containing the loaded feature data.
+        """
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        t_start = tt.start()
+        cdev = self._g.compute_device()
+        with nvtx.annotate("pin_getter", color="red"):
+            pin = pin_getter(self.layer, len(idx), feat.shape[1])
+        with nvtx.annotate("index_select", color="red"):
+            torch.index_select(feat, 0, idx, out=pin)
+        data = pin.to(cdev, non_blocking=True)
+        tt.t_prep_input += tt.elapsed(t_start)
+        return data
+    
+    def _load_mem_mail_data_slice(self, unique_nodes_slice, use_pin=True):
+        """[PIPELINE] Loads the node memory and mail to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_mem_mail_pin", color="red"):
+            cdev = self._g.compute_device()
+            mail_pin = self._ctx._get_mail_pin(self.layer, len(unique_nodes_slice))
+            torch.index_select(self._g.mailbox.mail, 0, unique_nodes_slice, out=mail_pin)
+            mem_pin = self._ctx._get_mem_data_pin(self.layer, len(unique_nodes_slice))
+            torch.index_select(self._g.mem.data, 0, unique_nodes_slice, out=mem_pin)
+
+            pin = torch.cat([mem_pin, mail_pin], dim=1).pin_memory()
+            return pin.to(cdev, non_blocking=True)
+
+    def _load_mail_mem_data_slice(self, unique_nodes_slice, use_pin=True):
+        """[PIPELINE] Loads the node memory and mail to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_mem_mail_pin", color="red"):
+            cdev = self._g.compute_device()
+            mail_pin = self._ctx._get_mail_pin(self.layer, len(unique_nodes_slice))
+            torch.index_select(self._g.mailbox.mail, 0, unique_nodes_slice, out=mail_pin)
+            mem_pin = self._ctx._get_mem_data_pin(self.layer, len(unique_nodes_slice))
+            torch.index_select(self._g.mem.data, 0, unique_nodes_slice, out=mem_pin)
+
+            pin = torch.cat([mail_pin, mem_pin], dim=1).pin_memory()
+            return pin.to(cdev, non_blocking=True)
+    
+    def _load_mem_data_slice(self, unique_nodes_slice, use_pin=True):
+        """[PIPELINE] Loads the node memory to the TGraph's computation device."""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_mem_pin", color="red"):
+            cdev = self._g.compute_device()
+            pin = self._ctx._get_mem_data_pin(self.layer, len(unique_nodes_slice))
+            torch.index_select(self._g.mem.data, 0, unique_nodes_slice, out=pin)
+            return pin.to(cdev, non_blocking=True)
+
+    def _load_mail_slice(self, unique_nodes_slice, use_pin=True):
+        """[PIPELINE] Loads the mail to the TGraph's computation device"""
+        # sdev.type == 'cpu' and cdev.type == 'cuda' and use_pin
+        with nvtx.annotate("_block _load_mail_pin", color="red"):
+            cdev = self._g.compute_device()
+            pin = self._ctx._get_mail_pin(self.layer, len(unique_nodes_slice))
+            torch.index_select(self._g.mailbox.mail, 0, unique_nodes_slice, out=pin)
+            return pin.to(cdev, non_blocking=True)
 
     def _load_mem_data(self, use_pin=False):
         """Loads the node memory to the TGraph's computation device."""
@@ -491,9 +700,7 @@ class TBlock(object):
         """Loads the mail to the TGraph's computation device"""
         with nvtx.annotate("_block _load_mail", color="red"):
             t_start = tt.start()
-            sdev = self._g.storage_device()
-            cdev = self._g.compute_device()
-            if sdev.type == 'cuda' and cdev.type == 'cuda':
+            if self._g.storage_device() != torch.device("cpu"):
                 with nvtx.annotate("_block _load_mail nodes", color="red"):
                     nodes = self.allnodes()
                 with nvtx.annotate("_block _load_mail data", color="red"):

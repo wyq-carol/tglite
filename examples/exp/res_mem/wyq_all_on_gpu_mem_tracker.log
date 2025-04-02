@@ -1,0 +1,314 @@
+=== init ===
+
+11776.1680MB edge feat + node feat
++ | 2 * Size:(1140149, 172)       | Memory: 1496.1 M | <class 'torch.Tensor'> | torch.float32
++ | 2 * Size:(7833140, 172)       | Memory: 10279. M | <class 'torch.Tensor'> | torch.float32
+11780MB, 11776.1680MB
+At tgn/train.py line 74: <module>                     Total Tensor Used Memory:11775.3Mb Total Allocated Memory:11776.2Mb
+
+2061.6318MB node mem, t, node mailbox, t
++ | 2 * Size:(1140149)           | Memory: 8.6986 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(1140149, 372)       | Memory: 1617.9 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(1140149, 100)       | Memory: 434.93 M | <class 'torch.Tensor'> | torch.float32
+13854MB, 13837.7998MB
+At tgn/train.py line 78: <module>                     Total Tensor Used Memory:15459.1Mb Total Allocated Memory:13837.8Mb
+
+1.2461MB weights
++ | 1 * Size:(300, 100)           | Memory: 0.1144 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 1 * Size:(300, 472)           | Memory: 0.5401 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 2 * Size:(300,)               | Memory: 0.0022 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 1 * Size:(200,)               | Memory: 0.0007 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 1 * Size:(200, 372)           | Memory: 0.2838 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 1 * Size:(100, 172)           | Memory: 0.0656 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 9 * Size:(100,)               | Memory: 0.0034 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 2 * Size:(100, 100)           | Memory: 0.0762 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 1 * Size:(1, 100)             | Memory: 0.0003 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 2 * Size:(100, 200)           | Memory: 0.1525 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
++ | 2 * Size:(100, 1)             | Memory: 0.0007 M | <class 'torch.nn.parameter.Parameter'> | torch.float32
+13856MB, 13839.0459MB
+At tgn/train.py line 115: <module>                    Total Tensor Used Memory:15460.4Mb Total Allocated Memory:13839.0Mb
+
+=== preload ===
+
+31.1131MB batch node mailbox
++ | 1 * Size:(21925, 372)         | Memory: 31.113 M | <class 'torch.Tensor'> | torch.float32
+13888MB, 13871.5898MB
+At /home/tglite/python/tglite/_block.py line 506: _load_mail Total Tensor Used Memory:15492.0Mb Total Allocated Memory:13871.6Mb
+
+8.3638MB batch node mem
++ | 1 * Size:(21925, 100)         | Memory: 8.3637 M | <class 'torch.Tensor'> | torch.float32
+13888MB, 13879.9536MB
+At /home/tglite/python/tglite/_block.py line 491: _load_mem_data Total Tensor Used Memory:15500.4Mb Total Allocated Memory:13880.0Mb
+
+14.3857MB batch node feat 
++ | 1 * Size:(21925, 172)         | Memory: 14.385 M | <class 'torch.Tensor'> | torch.float32
+13904MB, 13894.3394MB
+At /home/tglite/python/tglite/_block.py line 443: _load_nfeat Total Tensor Used Memory:15514.8Mb Total Allocated Memory:13894.3Mb
+
+11.7368MB batch edge feat
++ | 1 * Size:(17888, 172)         | Memory: 11.736 M | <class 'torch.Tensor'> | torch.float32
+13916MB, 13906.3394MB
+At /home/tglite/python/tglite/_block.py line 433: _load_efeat Total Tensor Used Memory:15526.5Mb Total Allocated Memory:13906.3Mb
+
+=== update mem : precompute times ===
+
+0.0840MB delta t
++ | 1 * Size:(21925,)             | Memory: 0.0836 M | <class 'torch.Tensor'> | torch.float32
+13918MB, 13906.5073MB
+At /home/tglite/examples/tgn/tgn.py line 133: update_memory Total Tensor Used Memory:15526.8Mb Total Allocated Memory:13906.5Mb
+
+16.4887MB tmp = self.w(is_zero_tensor, ts) (中间张量 self + other)
++ | 2 * Size:(21925, 100)         | Memory: 16.727 M | <class 'torch.Tensor'> | torch.float32
+13938MB, 13922.9961MB
+At /home/tglite/python/tglite/mymodule.py line 51: forward Total Tensor Used Memory:15535.1Mb Total Allocated Memory:13923.0Mb
+
+8.3637MB ans = torch.cos(tmp)
++ | 1 * Size:(21925, 100)         | Memory: 8.3637 M | <class 'torch.Tensor'> | torch.float32
+13958MB, 13931.3599MB
+At /home/tglite/python/tglite/nn.py line 86: forward  Total Tensor Used Memory:15543.5Mb Total Allocated Memory:13931.4Mb
+
+=== update mem : self.mem_cell ===
+
+31.1131MB mail = torch.cat([blk.mail(), mail], dim=1)
++ | 1 * Size:(21925, 472)         | Memory: 39.476 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(21925, 100)         | Memory: 8.3637 M | <class 'torch.Tensor'> | torch.float32
+13978MB, 13962.9961MB
+At /home/tglite/examples/tgn/tgn.py line 138: update_memory Total Tensor Used Memory:15574.7Mb Total Allocated Memory:13963.0Mb
+
+100.3647MB _VF.gru_cell (中间张量 self + other)
++ | 1 * Size:(21925, 100)         | Memory: 8.3637 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(472, 300)           | Memory: 0.5401 M | <class 'torch.Tensor'> | torch.float32
++ | 2 * Size:(21925, 300)         | Memory: 50.182 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(21925, 500)         | Memory: 41.818 M | <class 'torch.Tensor'> | torch.float32
+14092MB, 14065.3599MB
+At /home/tglite/python/tglite/mymodule.py line 191: forward Total Tensor Used Memory:15583.0Mb Total Allocated Memory:14065.4Mb
+
+=== update mem : before aggr ===
+
+-0.0836MB del delta t
+- | 1 * Size:(21925,)             | Memory: 0.0836 M | <class 'torch.Tensor'> | torch.float32
+13918MB, 13906.5073MB
+At /home/tglite/examples/tgn/tgn.py line 133: update_memory Total Tensor Used Memory:15526.8Mb Total Allocated Memory:13906.5Mb
+
+8.3637MB nfeat = self.nfeat_map(tail.nfeat())
++ | 1 * Size:(21925, 100)         | Memory: 8.3637 M | <class 'torch.Tensor'> | torch.float32
+14092MB, 14073.6396MB
+At /home/tglite/examples/tgn/tgn.py line 71: forward  Total Tensor Used Memory:15591.2Mb Total Allocated Memory:14073.6Mb
+
+1.5400MB tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+6.8237MB tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
++ | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(17888, 100)         | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32
+14112MB, 14082.0776MB
+At /home/tglite/examples/tgn/tgn.py line 77: forward  Total Tensor Used Memory:15599.6Mb Total Allocated Memory:14082.1Mb
+
+-16.7274MB del nfeat mem
+- | 2 * Size:(21925, 100)         | Memory: 16.727 M | <class 'torch.Tensor'> | torch.float32
+14092MB, 14065.3501MB
+At /home/tglite/examples/tgn/tgn.py line 81: forward  Total Tensor Used Memory:15582.9Mb Total Allocated Memory:14065.4Mb
+
+=== op aggr : precompute zero ===
+
+1.5400MB ans = torch.cos(tmp)
++ | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+14092MB, 14067.2661MB
+At /home/tglite/python/tglite/nn.py line 86: forward  Total Tensor Used Memory:15586.0Mb Total Allocated Memory:14067.3Mb
+
+=== op aggr : precompute times ===
+
+0.0682MB blk.time_deltas()
+- | 1 * Size:(17888,)             | Memory: 0.0682 M | <class 'torch.Tensor'> | torch.float32
+14092MB, 14067.3345MB
+At /home/tglite/python/tglite/nn.py line 142: forward  Total Tensor Used Memory:15586.0Mb Total Allocated Memory:14067.3Mb
+
+6.8237MB tmp = self.w(is_zero_tensor, ts)
+6.8237MB ans = torch.cos(tmp)
++ | 2 * Size:(17888, 100)         | Memory: 13.647 M | <class 'torch.Tensor'> | torch.float32
+14112MB, 14080.9819MB
+At /home/tglite/python/tglite/nn.py line 86: forward  Total Tensor Used Memory:15599.7Mb Total Allocated Memory:14081.0Mb
+
+=== op aggr ===
+
+3.0800MB Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
++ | 1 * Size:(4037, 200)          | Memory: 3.0799 M | <class 'torch.Tensor'> | torch.float32
+14112MB, 14084.4932MB
+At /home/tglite/python/tglite/nn.py line 152: forward Total Tensor Used Memory:15602.8Mb Total Allocated Memory:14084.5Mb
+
+25.3843MB Z = torch.cat([blk.srcdata['h'], blk.efeat(), nbrs_time_feat], dim=1)
++ | 1 * Size:(17888, 372)         | Memory: 25.384 M | <class 'torch.Tensor'> | torch.float32
+14138MB, 14110.4932MB
+At /home/tglite/python/tglite/nn.py line 158: forward Total Tensor Used Memory:15628.2Mb Total Allocated Memory:14110.5Mb
+
+-8.3637MB del zero_time_feat nbrs_time_feat
+- | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(17888, 100)         | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32
+14118MB, 14101.7534MB
+At /home/tglite/python/tglite/nn.py line 166: forward Total Tensor Used Memory:15619.8Mb Total Allocated Memory:14101.8Mb
+
+1.5400MB Q = self.w_q(Q)
++ | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+14118MB, 14103.6694MB
+At /home/tglite/python/tglite/nn.py line 166: forward Total Tensor Used Memory:15621.4Mb Total Allocated Memory:14103.7Mb
+
+13.6475MB Z = self.w_kv(Z)
++ | 1 * Size:(17888, 200)         | Memory: 13.647 M | <class 'torch.Tensor'> | torch.float32
+14132MB, 14117.6694MB
+At /home/tglite/python/tglite/nn.py line 169: forward Total Tensor Used Memory:15635.0Mb Total Allocated Memory:14117.7Mb
+
+5.2837MB Q = edge_view(blk, Q) # 对Q进行scatter
++ | 1 * Size:(17888, 100)         | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+14152MB, 14122.5771MB
+At /home/tglite/python/tglite/nn.py line 187: forward Total Tensor Used Memory:15654.0Mb Total Allocated Memory:14122.6Mb
+
+0.1365MB attn = torch.sum(Q * K, dim=2)
++ | 1 * Size:(17888, 2)           | Memory: 0.1364 M | <class 'torch.Tensor'> | torch.float32
+14152MB, 14122.7139MB
+At /home/tglite/python/tglite/nn.py line 201: forward Total Tensor Used Memory:15660.9Mb Total Allocated Memory:14122.7Mb
+
+0.1365MB attn = self.attn_act(attn)
++ | 1 * Size:(17888, 2)           | Memory: 0.1364 M | <class 'torch.Tensor'> | torch.float32
+14152MB, 14122.8506MB
+At /home/tglite/python/tglite/nn.py line 207: forward Total Tensor Used Memory:15661.1Mb Total Allocated Memory:14122.9Mb
+
+0.9553MB attn = edge_softmax(blk, attn) (中间张量 临时张量)
++ | 1 * Size:(17888,)             | Memory: 0.1365 M | <class 'torch.Tensor'> | torch.int64
++ | 4 * Size:(17888, 2)           | Memory: 1.0917 M | <class 'torch.Tensor'> | torch.int64 (?)
++ | 6 * Size:(17888, 2)           | Memory: 0.8188 M | <class 'torch.Tensor'> | torch.float32
+At /home/tglite/python/tglite/nn.py line 214: forward Total Tensor Used Memory:15662.8Mb Total Allocated Memory:14123.8Mb
+
+0.0341MB attn = self.dropout(attn)
++ | 1 * Size:(17888, 2)           | Memory: 0.0341 M | <class 'torch.Tensor'> | torch.bool
+14152MB, 14123.8413MB
+At /home/tglite/python/tglite/nn.py line 219: forward Total Tensor Used Memory:15662.9Mb Total Allocated Memory:14123.8Mb
+
+6.8237MB out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1)) (中间张量)
++ | 1 * Size:(17888, 2, 1)        | Memory: 0.1364 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(17888, 100)         | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32 (?)
++ | 1 * Size:(17888, 2, 50)       | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32 (?)
+14152MB, 14130.6650MB
+At /home/tglite/python/tglite/nn.py line 224: forward Total Tensor Used Memory:15676.7Mb Total Allocated Memory:14130.7Mb
+
+-5.2837MB out = edge_reduce(blk, out, op='sum') (中间张量)
++ | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(17888, 100)         | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32 (?)
+- | 1 * Size:(17888, 2, 50)       | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32 (?)
+14152MB, 14125.7573MB
+At /home/tglite/python/tglite/nn.py line 224: forward Total Tensor Used Memory:15664.2Mb Total Allocated Memory:14125.8Mb
+
+1.5400MB out = torch.cat([out, blk.dstdata['h']], dim=1) 
++ | 1 * Size:(4037, 200)          | Memory: 3.0799 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+14152MB, 14126.9214MB
+At /home/tglite/python/tglite/nn.py line 228: forward Total Tensor Used Memory:15665.8Mb Total Allocated Memory:14126.9Mb
+
+1.5400MB out = self.w_out(out) (中间张量)
++ | 1 * Size:(200, 100)           | Memory: 0.0762 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+14152MB, 14128.8374MB
+At /home/tglite/python/tglite/nn.py line 236: forward Total Tensor Used Memory:15667.4Mb Total Allocated Memory:14128.8Mb
+
+0.3850MB out = torch.nn.functional.relu(self.dropout(out)) (中间张量抵消)
++ | 1 * Size:(4037, 100)          | Memory: 0.3849 M | <class 'torch.Tensor'> | torch.bool
+14152MB, 14128.8467MB
+At /home/tglite/python/tglite/nn.py line 241: forward Total Tensor Used Memory:15667.8Mb Total Allocated Memory:14128.8Mb
+
+1.5708MB out = self.layer_norm(out) (中间张量)
++ | 2 * Size:(4037, 1)            | Memory: 0.0307 M | <class 'torch.Tensor'> | torch.float32
++ | 1 * Size:(4037, 100)          | Memory: 1.5399 M | <class 'torch.Tensor'> | torch.float32
+14152MB, 14130.7939MB
+At /home/tglite/python/tglite/nn.py line 244: forward Total Tensor Used Memory:15669.4Mb Total Allocated Memory:14130.8Mb
+
+-8.1528MB embeds ; del out _srcdata _dstdata (blk.clear_data())
++ | 1 * Size:(4500, 100)          | Memory: 1.7166 M | <class 'torch.Tensor'> | torch.float32
+- | 2 * Size:(4037, 100)          | Memory: 3.0799 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(17888, 100)         | Memory: 6.8237 M | <class 'torch.Tensor'> | torch.float32
+-43.2562MB del head tail (edata + _g_mail)
+- | 1 * Size:(17888,)             | Memory: 0.0682 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(17888, 172)         | Memory: 11.736 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(21925, 372)         | Memory: 31.113 M | <class 'torvch.Tensor'> | torch.float32
++ | 2 * Size:(17888,)             | Memory: 0.2729 M | <class 'torch.Tensor'> | torch.int64
+- | 1 * Size:(4500,)              | Memory: 0.0343 M | <class 'torch.Tensor'> | torch.int64
+- | 3 * Size:(17888,)             | Memory: 0.4094 M | <class 'torch.Tensor'> | torch.int64
+- | 1 * Size:(21925,)             | Memory: 0.1672 M | <class 'torch.Tensor'> | torch.int64
+14108MB, 14077.9834MB
+At /home/tglite/examples/tgn/tgn.py line 92: forward  Total Tensor Used Memory:15617.4Mb Total Allocated Memory:14078.0Mb
+
+=== compute score ===
+
+0.5722MB h_src = self.src_fc(src) self.edge_predictor(src, dst)
++ | 1 * Size:(1500, 100)          | Memory: 0.5722 M | <class 'torch.Tensor'> | torch.float32
+14110MB, 14078.5557MB
+At /home/tglite/examples/support.py line 121: forward Total Tensor Used Memory:15619.7Mb Total Allocated Memory:14078.6Mb
+
+0.5722MB h_dst = self.dst_fc(dst)
++ | 1 * Size:(1500, 100)          | Memory: 0.5722 M | <class 'torch.Tensor'> | torch.float32
+14110MB, 14079.1279MB
+At /home/tglite/examples/support.py line 126: forward Total Tensor Used Memory:15620.3Mb Total Allocated Memory:14079.1Mb
+
+0.5722MB h_out = self.act(h_src + h_dst)
++ | 1 * Size:(1500, 100)          | Memory: 0.5722 M | <class 'torch.Tensor'> | torch.float32
+14112MB, 14079.7002MB
+At /home/tglite/examples/support.py line 131: forward Total Tensor Used Memory:15620.8Mb Total Allocated Memory:14079.7Mb
+
+-1.1387MB ans ; del h_src h_dst
++ | 1 * Size:(1500, 1)            | Memory: 0.0057 M | <class 'torch.Tensor'> | torch.float32
+- | 2 * Size:(1500, 100)          | Memory: 1.1444 M | <class 'torch.Tensor'> | torch.float32
+14110MB, 14078.5615MB
+At /home/tglite/examples/tgn/tgn.py line 93: forward  Total Tensor Used Memory:15619.7Mb Total Allocated Memory:14078.6Mb
+
+0.5722MB h_src = self.src_fc(src) self.edge_predictor(src, neg)
++ | 1 * Size:(1500, 100)          | Memory: 0.5722 M | <class 'torch.Tensor'> | torch.float32
+14110MB, 14078.5557MB
+At /home/tglite/examples/support.py line 121: forward Total Tensor Used Memory:15619.7Mb Total Allocated Memory:14078.6Mb
+
+0.5722MB h_dst = self.dst_fc(dst)
++ | 1 * Size:(1500, 100)          | Memory: 0.5722 M | <class 'torch.Tensor'> | torch.float32
+14110MB, 14079.1279MB
+At /home/tglite/examples/support.py line 126: forward Total Tensor Used Memory:15620.3Mb Total Allocated Memory:14079.1Mb
+
+0.5722MB h_out = self.act(h_src + h_dst)
++ | 1 * Size:(1500, 100)          | Memory: 0.5722 M | <class 'torch.Tensor'> | torch.float32
+14112MB, 14079.7002MB
+At /home/tglite/examples/support.py line 131: forward Total Tensor Used Memory:15620.8Mb Total Allocated Memory:14079.7Mb
+
+-1.1387MB ans ; del h_src h_dst
++ | 1 * Size:(1500, 1)            | Memory: 0.0057 M | <class 'torch.Tensor'> | torch.float32
+- | 2 * Size:(1500, 100)          | Memory: 1.1444 M | <class 'torch.Tensor'> | torch.float32
+14110MB, 14078.5615MB
+At /home/tglite/examples/tgn/tgn.py line 97: forward  Total Tensor Used Memory:15619.7Mb Total Allocated Memory:14078.6Mb
+
+=== save raw msg ===
+
+0.0458MB blk = batch.block_adj(self.ctx)
++ | 2 * Size:(3000,)              | Memory: 0.0457 M | <class 'torch.Tensor'> | torch.int64
+14112MB, 14079.1855MB
+At /home/tglite/examples/tgn/tgn.py line 164: save_raw_msgs Total Tensor Used Memory:15620.3Mb Total Allocated Memory:14079.2Mb
+
+-0.0105MB blk = tg.op.coalesce(blk, by='latest')
++ | 2 * Size:(360,)               | Memory: 0.0054 M | <class 'torch.Tensor'> | torch.int64
++ | 1 * Size:(720,)               | Memory: 0.0054 M | <class 'torch.Tensor'> | torch.int64
++ | 1 * Size:(360,)               | Memory: 0.0013 M | <class 'torch.Tensor'> | torch.float32
+- | 1 * Size:(3000,)              | Memory: 0.0228 M | <class 'torch.Tensor'> | torch.int64
+14112MB, 14079.1758MB
+At /home/tglite/examples/tgn/tgn.py line 169: save_raw_msgs Total Tensor Used Memory:15620.3Mb Total Allocated Memory:14079.2Mb
+
+0.5191MB uniq, nbrs, eids
++ | 3 * Size:(360,)               | Memory: 0.0082 M | <class 'torch.Tensor'> | torch.int64
++ | 1 * Size:(360, 372)           | Memory: 0.5108 M | <class 'torch.Tensor'> | torch.float32
+14112MB, 14079.6958MB
+At /home/tglite/examples/tgn/tgn.py line 183: save_raw_msgs Total Tensor Used Memory:15620.8Mb Total Allocated Memory:14079.7Mb
+
+0.0014MB mail_ts
++ | 1 * Size:(360,)               | Memory: 0.0013 M | <class 'torch.Tensor'> | torch.float32
+14112MB, 14079.6973MB
+At /home/tglite/examples/tgn/tgn.py line 189: save_raw_msgs Total Tensor Used Memory:15620.8Mb Total Allocated Memory:14079.7Mb
+
+-0.5557MB del blk uniq nbrs eids mail_ts
+- | 1 * Size:(720,)               | Memory: 0.0054 M | <class 'torch.Tensor'> | torch.int64
+- | 1 * Size:(360, 372)           | Memory: 0.5108 M | <class 'torch.Tensor'> | torch.float32
+- | 2 * Size:(360,)               | Memory: 0.0027 M | <class 'torch.Tensor'> | torch.float32
+- | 5 * Size:(360,)               | Memory: 0.0137 M | <class 'torch.Tensor'> | torch.int64
+- | 1 * Size:(3000,)              | Memory: 0.0228 M | <class 'torch.Tensor'> | torch.int64
+At /home/tglite/examples/tgn/tgn.py line 108: forward Total Tensor Used Memory:15620.3Mb Total Allocated Memory:14079.1Mb
+

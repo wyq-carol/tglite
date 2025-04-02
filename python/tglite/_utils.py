@@ -4,6 +4,16 @@ import numpy as np
 from . import _c
 from ._core import TError
 
+import sys
+
+# 假设我们通过环境变量来控制是否打印信息
+import os
+print_info = os.getenv('PRINT_INFO', '0') == '1'
+
+def INFO_LOG(*args):
+    if print_info:
+        print("[INFO]", *args, file=sys.stdout)
+
 
 def get_num_cpus(default=16) -> int:
     cpus = os.cpu_count()

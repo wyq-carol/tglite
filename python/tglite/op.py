@@ -10,6 +10,8 @@ from ._block import TBlock
 from ._context import TContext
 from ._stats import tt
 import nvtx
+from tglite.gpu_mem_track import *
+from tglite._utils import INFO_LOG
 
 
 # def find_last_message(uniq_nodes: np.ndarray, sorted_edges: np.ndarray):
@@ -25,9 +27,11 @@ def edge_view(blk: TBlock, data: Tensor) -> Tensor:
     :param blk:
     :param data:
     '''
-    blk._check_has_nbrs()
-    assert data.shape[0] == blk._dstdata.dim()
+    # blk._check_has_nbrs()
+    # assert data.shape[0] == blk._dstdata.dim()
     if blk._g.storage_device() != torch.device("cpu"):
+        # print(f"torch.save {blk._g_dstindex.shape}")
+        # torch.save(blk._g_dstindex, "blk._g_dstindex.pt")
         return data[blk._g_dstindex]
 
     idx = torch.from_numpy(blk._dstindex)
@@ -42,11 +46,13 @@ def edge_softmax(blk: TBlock, data: Tensor) -> Tensor:
     :param blk:
     :param data:
     '''
-    blk._check_has_nbrs()
-    size = blk._edata.dim()
-    assert data.shape[0] == size
+    # blk._check_has_nbrs()
+    # size = blk._edata.dim()
+    size = blk.num_src()
+    # assert blk._edata.dim() == blk.num_src()
     if blk._g.storage_device() != torch.device("cpu"):
         reindex = torch.unique(blk._g_dstindex, return_inverse=True)[1]
+        # print(f"edge_softmax reindex {reindex}")
         return torch_scatter.scatter_softmax(data, reindex, dim=0, dim_size=size)
 
     # 在这等我！
@@ -65,10 +71,11 @@ def edge_reduce(blk: TBlock, data: Tensor, op='sum') -> Tensor:
     :param blk:
     :param data:
     '''
-    blk._check_has_nbrs()
+    # blk._check_has_nbrs()
     assert op in ['sum', 'mean'], "currently only supports sum or mean"
-    assert data.shape[0] == blk._edata.dim()
-    size = blk._dstdata.dim()
+    # size = blk._dstdata.dim()
+    size = blk.num_dst()
+    # assert blk._dstdata.dim() == blk.num_dst()
     if blk._g.storage_device() != torch.device("cpu"):
         return torch_scatter.segment_coo(data, blk._g_dstindex, dim_size=size, reduce=op)
 
@@ -114,7 +121,49 @@ def coalesce(blk: TBlock, by='latest') -> TBlock:
     return blk
 
 
-def preload(blk: TBlock, use_pin=True):
+def preload0_noMailMem(blk: TBlock, use_pin=True):
+    '''
+    Prefetch data (e.g. features, memory, mails) needed by the TBlock 
+    and its subsequent blocks for computations.
+
+    :param blk:
+    :param use_pin: whether to pin memory
+    '''
+    curr = blk
+    while curr.next is not None:
+        curr = curr.next
+    while curr is not None:
+        if curr.num_dst() > 0:
+            if curr.has_nbrs():
+                if curr.next is None:
+                    with nvtx.annotate("preload nfeat", color="red"):
+                        curr._load_nfeat(use_pin=use_pin)
+                with nvtx.annotate("preload efeat", color="red"):
+                    curr._load_efeat(use_pin=use_pin)
+        curr = curr.prev
+
+def preload0_uniqLoadFeat_noMailMem(blk: TBlock, use_pin=True):
+    '''
+    Prefetch data (e.g. features, memory, mails) needed by the TBlock 
+    and its subsequent blocks for computations.
+
+    :param blk:
+    :param use_pin: whether to pin memory
+    '''
+    curr = blk
+    while curr.next is not None:
+        curr = curr.next
+    while curr is not None:
+        if curr.num_dst() > 0:
+            if curr.has_nbrs():
+                if curr.next is None:
+                    with nvtx.annotate("preload nfeat", color="red"):
+                        curr._load_nfeat0_uniqLoadFeat(use_pin=use_pin)
+                with nvtx.annotate("preload efeat", color="red"):
+                    curr._load_efeat0_uniqLoadFeat(use_pin=use_pin)
+        curr = curr.prev
+
+def preload0_uniqLoadFeat(blk: TBlock, use_pin=True):
     '''
     Prefetch data (e.g. features, memory, mails) needed by the TBlock 
     and its subsequent blocks for computations.
@@ -135,9 +184,43 @@ def preload(blk: TBlock, use_pin=True):
             if curr.has_nbrs():
                 if curr.next is None:
                     with nvtx.annotate("preload nfeat", color="red"):
-                        curr._load_nfeat(use_pin=use_pin)
+                        curr._load_nfeat0_uniqLoadFeat(use_pin=use_pin)
                 with nvtx.annotate("preload efeat", color="red"):
+                    curr._load_efeat0_uniqLoadFeat(use_pin=use_pin)
+        curr = curr.prev
+
+def preload(blk: TBlock, use_pin=True):
+    '''
+    Prefetch data (e.g. features, memory, mails) needed by the TBlock 
+    and its subsequent blocks for computations.
+
+    :param blk:
+    :param use_pin: whether to pin memory
+    '''
+    curr = blk
+    while curr.next is not None:
+        curr = curr.next
+    while curr is not None:
+        if curr.num_dst() > 0:
+            if curr.next is None:
+                with nvtx.annotate("preload mail", color="red"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                    curr._load_mail(use_pin=use_pin)
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                with nvtx.annotate("preload mem_data", color="red"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                    curr._load_mem_data(use_pin=use_pin)
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            if curr.has_nbrs():
+                if curr.next is None:
+                    with nvtx.annotate("preload nfeat", color="red"):
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        curr._load_nfeat(use_pin=use_pin)
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                with nvtx.annotate("preload efeat", color="red"):
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     curr._load_efeat(use_pin=use_pin)
+                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         curr = curr.prev
 
 
@@ -223,6 +306,39 @@ def dedup(blk: TBlock) -> TBlock:
         # print("register-hook _DedupInvertHook")
         with nvtx.annotate("register-hook _DedupInvertHook", color="red"):
             blk.register_hook(_DedupInvertHook(inv_idx))
+    return blk
+
+def dedup_statistic(blk: TBlock) -> TBlock:
+    '''
+    Applies the deduplication optimization to the TBlock 
+    by rewriting the destination nodes.
+
+    :param blk:
+    '''
+    if blk.num_dst() == 0:
+        return blk
+    nodes = blk._dstnodes
+    times = blk._dsttimes
+    has_dups, nodes, times, inv_idx = _c.dedup_targets(nodes, times)
+    if has_dups:
+        blk._replace_dst(nodes, times)
+        # print("register-hook _DedupInvertHook")
+        with nvtx.annotate("register-hook _DedupInvertHook", color="red"):
+            blk.register_hook(_DedupInvertHook(inv_idx))
+    return blk, inv_idx
+
+def dedup1_offlineSample(blk: TBlock, inv_idx) -> TBlock:
+    '''
+    Applies the deduplication optimization to the TBlock 
+    by rewriting the destination nodes.
+
+    :param blk:
+    '''
+    if blk.num_dst() == 0:
+        return blk
+    # print("register-hook _DedupInvertHook")
+    with nvtx.annotate("register-hook _DedupInvertHook", color="red"):
+        blk.register_hook(_DedupInvertHook(inv_idx))
     return blk
 
 
@@ -361,7 +477,6 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
     with nvtx.annotate("precompute_zeros", color="red"):
         cdev = ctx._g.compute_device()
         if ctx._training or not ctx._time_enabled:
-            # return encoder(True, None)
             return encoder(True, num)
             
             if ctx._z is not None:
@@ -373,8 +488,11 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
                 else:
                     return encoder(False, torch.zeros(num, dtype=torch.float, device=cdev))
 
-        time_table = ctx._time_tables.get(id)
+        time_table = ctx._time_tables.get(id) # id 为layer id
         if time_table is None:
+            print(f"encoder: {encoder}")
+            print(torch.arange(
+                ctx._time_window + 1, dtype=torch.float, device=cdev).shape)
             time_table = encoder(torch.arange(
                 ctx._time_window + 1, dtype=torch.float, device=cdev))
             ctx._time_tables[id] = time_table
@@ -396,25 +514,33 @@ def precomputed_times(ctx: TContext, id: int, encoder: Callable, times: Tensor) 
     :return: a precomputed tensor of the given times
     '''
     with nvtx.annotate("precompute_times", color="red"):
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         if ctx._training or not ctx._time_enabled:
             return encoder(False, times)
     
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         time_table = ctx._time_tables.get(id)
         if time_table is None:
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             time_table = encoder(torch.arange(
                 ctx._time_window + 1, dtype=torch.float, device=ctx._g.compute_device()))
             ctx._time_tables[id] = time_table
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         size = times.shape[0]
         hit_count, hit_idx, output, times, inv_idx = \
             _c.find_dedup_time_hits(times, time_table, ctx._time_window)
         uniq_size = times.shape[0]
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         if hit_count != uniq_size:
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             miss_idx = (~ hit_idx)
             times = times[miss_idx]
             output[miss_idx] = encoder(times.squeeze())
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
         output = output[inv_idx]
         output = output.view(size, -1)
+        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         return output

@@ -7,6 +7,7 @@ from torch import Tensor
 
 from ._core import TError
 
+import concurrent.futures # todo 线程池
 
 class TContext(object):
     """Graph-level context and scratch space used by the tglite runtime."""
@@ -18,6 +19,8 @@ class TContext(object):
         :param TGraph g: The TGraph to operate on.
         """
         self._z = None
+        self.manager_nfeat = None
+        self.manager_efeat = None
 
         self._g = g
         self._training = True
@@ -38,6 +41,25 @@ class TContext(object):
         self._time_enabled = False
         self._time_window = int(1e4)
         self._time_tables = {}
+
+        # pre compile redundancy mul
+        self.compiled_forward_redundancy_mul = None
+
+        # batch redundancy
+        self._pre_nxt_efeat = torch.tensor([], device="cuda")
+        self._pre_nxt_nfeat = torch.tensor([], device="cuda")
+        # nxt pins
+        self.preload_thread = None
+        self._cur_nfeat_pins = None
+        self._cur_efeat_pins = None
+        # perf ceil base
+        self.perfCeilBase_thread = None
+        self.next_blk_tail = None
+        self.next_blk_head = None
+        self.next_mem = None
+        self.curr_blk_tail = None
+        self.curr_blk_head = None
+        self.curr_mem = None
 
     @property
     def graph(self) -> 'TGraph':
@@ -114,6 +136,12 @@ class TContext(object):
     def set_z(self, z):
         self._z = z
 
+    def set_blkm_nfeat(self, manager_nfeat):
+        self.manager_nfeat = manager_nfeat
+
+    def set_blkm_efeat(self, manager_efeat):
+        self.manager_efeat = manager_efeat
+
     def _get_efeat_pin(self, layer: int, rows: int, dim: int) -> Tensor:
         return self._get_pin(self._efeat_pins, layer, rows, [dim])
 
@@ -137,6 +165,7 @@ class TContext(object):
         :return: Pinned buffer.
         :rtype: Tensor
         """
+        # 两层有个cache优化 # TODO
         if layer not in cache:
             shape = tuple([rows] + dims)
             pin = torch.zeros(shape, pin_memory=True)

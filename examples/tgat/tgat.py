@@ -31,7 +31,6 @@ class TGAT(nn.Module):
         self.dedup = dedup
 
     def forward(self, batch: tg.TBatch) -> Tensor:
-        # import pdb; pdb.set_trace()
         head = batch.block(self.ctx)
         for i in range(self.num_layers):
             tail = head if i == 0 \
@@ -45,7 +44,6 @@ class TGAT(nn.Module):
             tail.dstdata['h'] = tail.dstfeat()
             tail.srcdata['h'] = tail.srcfeat()
         embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
-        # import pdb; pdb.set_trace()
         del head
         del tail
 

@@ -4,6 +4,160 @@ import inspect
 
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+r, ma, mr, mr_s, mr_l = 0, 0, 0, 0, 0
+count = 0
+count_memory_stats = 0
+
+# node centric skew
+node_count = {}
+# samples for coding
+samples = []
+
+def add_samples(item):
+    samples.append(item)
+    # print(f"show {len(samples[0][0])}")
+
+def get_samples(log_dir, log_name):
+    file_path = os.path.join(log_dir, f"samples_{log_name}.pt")
+    torch.save(samples, file_path)
+
+def node_centric_skew(dstnodes, srcnodes):
+    # 定义空字典用于统计节点出现次数
+    global node_count
+
+    # 合并所有节点
+    all_nodes = np.unique(np.concatenate((dstnodes, srcnodes)))
+
+    # 统计 dstnodes 中节点的出现次数
+    for node in all_nodes:
+        if node in node_count:
+            node_count[node] += 1
+        else:
+            node_count[node] = 1
+
+def get_node_centric_skew(log_dir, log_name):
+    # 假设 node_count 是一个全局变量，存储节点及其出现次数
+    global node_count
+
+    # 提取节点和对应的出现次数
+    nodes = list(node_count.keys())
+    counts = list(node_count.values())
+
+    # 使用 zip 函数将 nodes 和 counts 组合在一起，并按 counts 从大到小排序
+    sorted_pairs = sorted(zip(counts, nodes), reverse=True)
+    # 分离排序后的 nodes 和 counts
+    # nodes = [node for _, node in sorted_pairs]
+    # counts = [count for count, _ in sorted_pairs]
+    file_path = os.path.join(log_dir, f"nodes_{log_name}.pt")
+
+    torch.save(sorted_pairs, file_path)
+
+def draw_node_centric_skew(log_dir, log_name):
+    try:
+        # 假设 node_count 是一个全局变量，存储节点及其出现次数
+        global node_count
+
+        # 提取节点和对应的出现次数
+        nodes = list(node_count.keys())
+        counts = list(node_count.values())
+
+        # print(f"nodes {nodes}")
+        # print(f"counts {counts}")
+
+        # 绘制散点图
+        plt.figure(figsize=(10, 6))
+        plt.scatter(nodes, counts)
+        plt.xlabel('Nodes')
+        plt.ylabel('Occurrence Count')
+        plt.title('Node Occurrence Count Scatter Plot')
+
+        # 保存为 PNG 文件
+        file_path = os.path.join(log_dir, f"nodes_{log_name}_node_occurrence_scatter.png")
+
+        plt.savefig(file_path)
+        print(f"图像文件 {file_path} 保存成功。")
+
+        # 显示图形（可选）
+        plt.show()
+
+    except Exception as e:
+        print(f"保存图像文件时出现错误: {e}")
+
+def pack_hook(x):
+    global gpumemtracker
+    gpumemtracker.track()
+    print("Packing", x)
+    tmp = x
+    gpumemtracker.track()
+    return tmp
+
+def unpack_hook(x):
+    print("Unpacking", x)
+    return x
+
+def sep(num):
+    if num % 2 ** 20 == 0:
+        return f"{num} = {num // 2 ** 20}MB"
+    else:
+        return f"{num} ≈ {num / 2 ** 20:.4f}MB"
+
+def memory_stats(inputfile, inputline, device=0):
+    return
+    d = torch.cuda.memory_stats(device)
+
+    print(f'cur small_pool {sep(d["allocated_bytes.small_pool.current"]).rjust(20)}')
+    print(f'cur large_pool {sep(d["allocated_bytes.large_pool.current"]).rjust(20)}')
+
+    global r, ma, mr, mr_s, mr_l
+    global count, count_memory_stats
+    last_r, last_ma, last_mr, last_mr_s, last_mr_l = r, ma, mr, mr_s, mr_l
+    r = d["requested_bytes.all.current"]
+    ma = d["allocated_bytes.all.current"]
+    mr = d["reserved_bytes.all.current"]
+    mr_s, mr_l = d["segment.small_pool.current"], d["segment.large_pool.current"]
+
+    mat = d["active_bytes.all.current"]
+    miat = d["inactive_split_bytes.all.current"]
+
+    if mr_s - last_mr_s == 1 and mr_l - last_mr_l == 0:
+        cur_mr_tag = 'new segment belong to small pool'
+    elif mr_s - last_mr_s == 0 and mr_l - last_mr_l == 1:
+        cur_mr_tag = 'new segment belong to large pool'
+    elif mr_s - last_mr_s == 0 and mr_l - last_mr_l == 0:
+        cur_mr_tag = 'no new segment'
+    else:
+        # 1. self.mem_cell(mail, mem) _VF                             ===update mem===
+        # 2. (only all on GPU) torch.cos(self.w(is_zero_tensor, ts))  ===time encode===*2?
+        # 3. nfeat_map(nfeat)                                         ===before aggr===
+        # 4. (only all on GPU) self.out_fc(h_out)                     ===final output===
+        if count < 7:
+            count += 1
+            cur_mr_tag = f'new segments belongs to {mr_s - last_mr_s} small pools, {mr_l - last_mr_l} large pools'
+        else:
+            raise ValueError
+    mr_tag = f'small_pool({mr_s})   large_pool({mr_l})'
+    mat_tag = f'small_pool({d["active.small_pool.current"]})   large_pool({d["active.large_pool.current"]})'
+    miat_tag = f'small_pool({d["inactive_split.small_pool.current"]})   large_pool({d["inactive_split.large_pool.current"]})'
+
+    if mat + miat != mr:
+        print(f"***mat: {mat}, miat: {miat}, mr: {mr}***")
+    assert mat + miat == mr  # 已分配显存 + 未分配显存 = Segments 总和
+    assert mat == ma
+    print("")
+    print(f"count_memory_stats {count_memory_stats}: {inputfile} at line {inputline}")
+    count_memory_stats += 1
+    print(f"operation requested memory  : {sep(r-last_r).rjust(20)}")
+    print(f"operation allocated memory  : {sep(ma-last_ma).rjust(20)}")
+    print(f"operation reserved  memory  : {sep(mr-last_mr).rjust(20)}    {cur_mr_tag}")
+    print(f"total     reserved  memory  : {sep(mr).rjust(20)}    {mr_tag}")
+    print(f"total     active    memory  : {sep(mat).rjust(20)}    {mat_tag}")
+    print(f"total     inactive  memory  : {sep(miat).rjust(20)}    {miat_tag}")
 
 dtype_memory_size_dict = {
     torch.float64: 64/8,
@@ -73,7 +227,7 @@ class MemTracker(object):
 
     def clear_cache(self):
         gc.collect()
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
     def print_all_gpu_tensor(self, file=None):
         for x in self.get_tensors():
@@ -111,3 +265,6 @@ class MemTracker(object):
             f.write(f"\nAt {where_str:<50}"
                     f" Total Tensor Used Memory:{self.get_tensor_usage():<7.1f}Mb"
                     f" Total Allocated Memory:{self.get_allocate_usage():<7.1f}Mb\n\n")
+
+global gpumemtracker
+gpumemtracker = MemTracker() # todo

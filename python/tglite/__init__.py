@@ -55,14 +55,16 @@ class EdgesIter(object):
         self._size = size
         self._curr = 0 if start is None else start
         self._last = g.num_edges() if end is None else end
+        self._b_id = -1
 
     def __iter__(self) -> EdgesIter:
         return self
 
     def __next__(self) -> TBatch:
+        self._b_id += 1
         if self._curr < self._last:
             idx = self._curr
             self._curr += self._size
             end = min(self._curr, self._last)
-            return TBatch(self._g, range=(idx, end))
+            return TBatch(self._b_id, self._g, range=(idx, end))
         raise StopIteration
