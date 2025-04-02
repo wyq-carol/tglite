@@ -6,6 +6,7 @@ if TYPE_CHECKING:
 
 import torch
 import numpy as np
+from ._utils import INFO_LOG
 from torch import Tensor
 
 from ._stats import tt
@@ -84,6 +85,155 @@ class TimeEncode(torch.nn.Module):
             return ans
 
 
+class TemporalAttnLayer_precompute(torch.nn.Module):
+    # 统计一系列输入输出的shape
+    def __init__(self, ctx: TContext, num_heads: int,
+                 dim_node: int, dim_edge: int, dim_time: int, dim_out: int,
+                 dropout=0.1):
+        """
+        Initializes the Temporal Attention Layer for processing dynamic graphs with temporal features.
+        This layer uses multi-head attention mechanism to incorporate node, edge, and time features.
+
+        :param ctx: context object
+        :param num_heads: number of heads
+        :param dim_node: dimension of node features
+        :param dim_edge: dimension of edge features
+        :param dim_time: dimension of time features
+        :param dim_out: dimension of output features
+        :param dropout: dropout rate
+        """
+        super().__init__()
+        assert (dim_out % num_heads == 0)
+        self.ctx = ctx
+        self.num_heads = num_heads
+        self.dim_edge = dim_edge
+        self.dim_out = dim_out
+        self.time_encode = TimeEncode(dim_time)
+        self.w_q = torch.nn.Linear(dim_node + dim_time, dim_out)
+        self.w_kv = torch.nn.Linear(dim_node + dim_edge + dim_time, dim_out * 2)
+        self.w_out = torch.nn.Linear(dim_node + dim_out, dim_out)
+        self.attn_act = torch.nn.LeakyReLU(0.2)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.layer_norm = torch.nn.LayerNorm(dim_out)
+        
+        INFO_LOG("Layer init")
+        INFO_LOG(f"num_heads: {num_heads}")
+        INFO_LOG(f"dim_node: {dim_node}")
+        INFO_LOG(f"dim_edge: {dim_edge}")
+        INFO_LOG(f"dim_time: {dim_time}")
+        INFO_LOG(f"dim_out: {dim_out}")
+        INFO_LOG(f"dropout: {dropout}")
+        
+        
+    def forward(self, blk: TBlock) -> Tensor:
+        '''
+        Forward pass of the Temporal Attention Layer. Applies a time-sensitive attention mechanism over 
+        the input graph block (blk) to produce node embeddings. The method handles both cases of graph blocks 
+        with and without edges.
+
+        If the block has no edges, a zero-initialized tensor is concatenated with the destination node features.
+        For blocks with edges, the method computes attention scores and aggregates neighbor features using 
+        the computed attention. 
+
+        :param blk: input graph block
+        '''
+        INFO_LOG("FORWARD BLK")
+        INFO_LOG(f"blk.num_dst(): {blk.num_dst()}")
+        INFO_LOG(f"blk.num_src(): {blk.num_src()}")
+        INFO_LOG(f"blk.num_edges(): {blk.num_edges()}")
+        INFO_LOG(f"blk.layer: {blk.layer}")
+        INFO_LOG(f"blk.time_deltas().shape: {blk.time_deltas().shape}")
+        INFO_LOG(f"blk.dstdata['h'].shape: {blk.dstdata['h'].shape}")
+        INFO_LOG(f"blk.srcdata['h'].shape: {blk.srcdata['h'].shape}")
+        INFO_LOG(f"blk.efeat().shape: {blk.efeat().shape}")
+        INFO_LOG("FORWARD CTX")
+        INFO_LOG(f"ctx._training: {self.ctx._training}")
+        INFO_LOG(f"ctx._time_enabled: {self.ctx._time_enabled}")
+        INFO_LOG(f"ctx._time_window: {self.ctx._time_window}")
+        INFO_LOG(f"ctx._g: {self.ctx._g}")
+        INFO_LOG(f"ctx._time_tables: {self.ctx._time_tables}")
+        INFO_LOG(f"ctx._z: {self.ctx._z}")
+
+        # print(f"blk._g_dstindex {blk._g_dstindex.shape}")
+        # torch.save(blk._g_dstindex, "blk._g_dstindex.pt")
+        # print(f"blk.dstdata['h'] {blk.dstdata['h'].shape}")
+        # torch.save(blk.dstdata['h'], "blk.dstdata_h.pt")
+        # print(f"blk.srcdata['h'] {blk.srcdata['h'].shape}")
+        # torch.save(blk.srcdata['h'], "blk.srcdata_h.pt")
+        # torch.save(blk.efeat(), "blk.efeat.pt")
+        # torch.save(blk.time_deltas(), "blk.time_deltas.pt")
+
+        with nvtx.annotate("precompute", color="blue"):
+            t_start = tt.start()
+            INFO_LOG("FOWARD PRECOMPUTE ZERO")
+            zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
+            INFO_LOG(f"zero_time_feat.shape {zero_time_feat.shape}")
+            tt.t_time_zero += tt.elapsed(t_start)
+            t_start = tt.start()
+            INFO_LOG("FOWARD PRECOMPUTE NBR")
+            nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
+            INFO_LOG(f"nbrs_time_feat.shape {nbrs_time_feat.shape}")
+            tt.t_time_nbrs += tt.elapsed(t_start)
+            t_start = tt.start()
+        
+        with nvtx.annotate("redundancy-mul", color="red"): # TODO 这段的执行时间确实长
+            Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
+            INFO_LOG(f"Q {Q.dtype}")
+            if self.dim_edge > 0:
+                Z = torch.cat([blk.srcdata['h'], blk.efeat(), nbrs_time_feat], dim=1)
+            else:
+                Z = torch.cat([blk.srcdata['h'], nbrs_time_feat], dim=1)
+            del zero_time_feat
+            del nbrs_time_feat
+            # torch.cuda.empty_cache()
+
+            Q = self.w_q(Q)
+            Z = self.w_kv(Z)
+        
+        with nvtx.annotate("else", color="red"): # else这段没有显存变化 torch的机制？
+            with nvtx.annotate("else-K", color="red"):
+                K = Z[:, :self.dim_out]
+            with nvtx.annotate("else-V", color="red"):
+                V = Z[:, self.dim_out:]
+                del Z
+                tt.t_sum += tt.elapsed(t_start)
+                
+                t_start = tt.start()
+            with nvtx.annotate("else-Q", color="red"):
+                Q = edge_view(blk, Q) # 对Q进行scatter
+            with nvtx.annotate("else-reshape", color="red"):
+                Q = torch.reshape(Q, (Q.shape[0], self.num_heads, -1))
+                K = torch.reshape(K, (K.shape[0], self.num_heads, -1))
+                V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
+
+            with nvtx.annotate("else-attn", color="red"):
+                attn = torch.sum(Q * K, dim=2)
+                del Q
+                del K
+
+            with nvtx.annotate("else-leakyRelu", color="red"):
+                attn = self.attn_act(attn)
+        with nvtx.annotate("edge-softmax", color="blue"):
+            with nvtx.annotate("edge-softmax", color="blue"):
+                attn = edge_softmax(blk, attn)  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            with nvtx.annotate("dropout", color="blue"):
+                attn = self.dropout(attn)
+            with nvtx.annotate("reshape", color="blue"):
+                out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+                del attn
+
+            with nvtx.annotate("edge-reduce", color="blue"):
+                out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            out = torch.cat([out, blk.dstdata['h']], dim=1)
+        tt.t_self_attn += tt.elapsed(t_start)
+
+        with nvtx.annotate("output", color="blue"):
+            out = self.w_out(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            # torch.cuda.empty_cache()
+            out = torch.nn.functional.relu(self.dropout(out))
+            out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        return out
+
 
 class TemporalAttnLayer(torch.nn.Module):
     def __init__(self, ctx: TContext, num_heads: int,
@@ -127,111 +277,111 @@ class TemporalAttnLayer(torch.nn.Module):
 
         :param blk: input graph block
         '''
-        if blk.num_edges() == 0:
-            dev = blk.dstdata['h'].device
-            out = torch.zeros(blk.num_dst(), self.dim_out, dtype=torch.float32, device=dev)
-            out = torch.cat([out, blk.dstdata['h']], dim=1)
-        else:
-            with nvtx.annotate("precompute", color="blue"):
+        # if blk.num_edges() == 0:
+        #     dev = blk.dstdata['h'].device
+        #     out = torch.zeros(blk.num_dst(), self.dim_out, dtype=torch.float32, device=dev)
+        #     out = torch.cat([out, blk.dstdata['h']], dim=1)
+        # else:
+        with nvtx.annotate("precompute", color="blue"):
+            t_start = tt.start()
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            tt.t_time_zero += tt.elapsed(t_start)
+            t_start = tt.start()
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            tt.t_time_nbrs += tt.elapsed(t_start)
+            t_start = tt.start()
+        
+        with nvtx.annotate("redundancy-mul", color="red"): # TODO 这段的执行时间确实长
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            if self.dim_edge > 0:
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                Z = torch.cat([blk.srcdata['h'], blk.efeat(), nbrs_time_feat], dim=1)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            else:
+                Z = torch.cat([blk.srcdata['h'], nbrs_time_feat], dim=1)
+            del zero_time_feat
+            del nbrs_time_feat
+            # torch.cuda.empty_cache()
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            Q = self.w_q(Q)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            Z = self.w_kv(Z)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+        
+        with nvtx.annotate("else", color="red"): # else这段没有显存变化 torch的机制？
+            with nvtx.annotate("else-K", color="red"):
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                K = Z[:, :self.dim_out]
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            with nvtx.annotate("else-V", color="red"):
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                V = Z[:, self.dim_out:]
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                del Z
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                tt.t_sum += tt.elapsed(t_start)
+                
                 t_start = tt.start()
+            with nvtx.annotate("else-Q", color="red"):
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                zero_time_feat = precomputed_zeros(self.ctx, blk.layer, self.time_encode, blk.num_dst())
+                Q = edge_view(blk, Q) # 对Q进行scatter
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                tt.t_time_zero += tt.elapsed(t_start)
-                t_start = tt.start()
+            with nvtx.annotate("else-reshape", color="red"):
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                nbrs_time_feat = precomputed_times(self.ctx, blk.layer, self.time_encode, blk.time_deltas())
+                Q = torch.reshape(Q, (Q.shape[0], self.num_heads, -1))
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                tt.t_time_nbrs += tt.elapsed(t_start)
-                t_start = tt.start()
-            
-            with nvtx.annotate("redundancy-mul", color="red"): # TODO 这段的执行时间确实长
+                # print(Q.shape)
+                K = torch.reshape(K, (K.shape[0], self.num_heads, -1))
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                Q = torch.cat([blk.dstdata['h'], zero_time_feat], dim=1)
-                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                if self.dim_edge > 0:
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    Z = torch.cat([blk.srcdata['h'], blk.efeat(), nbrs_time_feat], dim=1)
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                else:
-                    Z = torch.cat([blk.srcdata['h'], nbrs_time_feat], dim=1)
-                del zero_time_feat
-                del nbrs_time_feat
-                # torch.cuda.empty_cache()
+                V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
+            with nvtx.annotate("else-attn", color="red"):
+                attn = torch.sum(Q * K, dim=2)
+                # print(attn.shape)
+                del Q
+                del K
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                Q = self.w_q(Q)
-                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                Z = self.w_kv(Z)
-                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-            
-            with nvtx.annotate("else", color="red"): # else这段没有显存变化 torch的机制？
-                with nvtx.annotate("else-K", color="red"):
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    K = Z[:, :self.dim_out]
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                with nvtx.annotate("else-V", color="red"):
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    V = Z[:, self.dim_out:]
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    del Z
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    tt.t_sum += tt.elapsed(t_start)
-                    
-                    t_start = tt.start()
-                with nvtx.annotate("else-Q", color="red"):
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    Q = edge_view(blk, Q) # 对Q进行scatter
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                with nvtx.annotate("else-reshape", color="red"):
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    Q = torch.reshape(Q, (Q.shape[0], self.num_heads, -1))
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    # print(Q.shape)
-                    K = torch.reshape(K, (K.shape[0], self.num_heads, -1))
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
-                with nvtx.annotate("else-attn", color="red"):
-                    attn = torch.sum(Q * K, dim=2)
-                    # print(attn.shape)
-                    del Q
-                    del K
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-
-                with nvtx.annotate("else-leakyRelu", color="red"):
-                    attn = self.attn_act(attn)
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            with nvtx.annotate("else-leakyRelu", color="red"):
+                attn = self.attn_act(attn)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+        with nvtx.annotate("edge-softmax", color="blue"):
             with nvtx.annotate("edge-softmax", color="blue"):
-                with nvtx.annotate("edge-softmax", color="blue"):
-                    attn = edge_softmax(blk, attn)  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                with nvtx.annotate("dropout", color="blue"):
-                    attn = self.dropout(attn)
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                with nvtx.annotate("reshape", color="blue"):
-                    out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    del attn
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                attn = edge_softmax(blk, attn)  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            with nvtx.annotate("dropout", color="blue"):
+                attn = self.dropout(attn)
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            with nvtx.annotate("reshape", color="blue"):
+                out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                del attn
+                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
-                with nvtx.annotate("edge-reduce", color="blue"):
-                    out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                out = torch.cat([out, blk.dstdata['h']], dim=1)
+            with nvtx.annotate("edge-reduce", color="blue"):
+                out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-            tt.t_self_attn += tt.elapsed(t_start)
+            out = torch.cat([out, blk.dstdata['h']], dim=1)
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+        tt.t_self_attn += tt.elapsed(t_start)
 
-            with nvtx.annotate("output", color="blue"):
-                out = self.w_out(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-                # torch.cuda.empty_cache()
-                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                out = torch.nn.functional.relu(self.dropout(out))
-                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-                # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+        with nvtx.annotate("output", color="blue"):
+            out = self.w_out(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            # torch.cuda.empty_cache()
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            out = torch.nn.functional.relu(self.dropout(out))
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         return out
     
 

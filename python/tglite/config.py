@@ -4,6 +4,7 @@ ON_STATISTIC = None
 OFFLINE_SAMPLE = None
 PERF_CEIL = None
 PERF_CEIL_BASE = None
+TEST_BLKM = None
 log_name = None
 log_dir = None
 

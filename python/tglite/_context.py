@@ -19,6 +19,8 @@ class TContext(object):
         :param TGraph g: The TGraph to operate on.
         """
         self._z = None
+        self.manager_nfeat = None
+        self.manager_efeat = None
 
         self._g = g
         self._training = True
@@ -133,6 +135,12 @@ class TContext(object):
 
     def set_z(self, z):
         self._z = z
+
+    def set_blkm_nfeat(self, manager_nfeat):
+        self.manager_nfeat = manager_nfeat
+
+    def set_blkm_efeat(self, manager_efeat):
+        self.manager_efeat = manager_efeat
 
     def _get_efeat_pin(self, layer: int, rows: int, dim: int) -> Tensor:
         return self._get_pin(self._efeat_pins, layer, rows, [dim])

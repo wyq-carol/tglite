@@ -15,8 +15,8 @@ from tglite.gpu_mem_track import *
 import nvtx
 import tglite.config
 import threading
-# import pycuda.autoinit
-# from pycuda import driver
+import pycuda.driver as cuda
+import pycuda.autoinit
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -221,23 +221,21 @@ class LinkPredTrainer(object):
         self.val_end = val_end
         self.model_path = model_path
         self.model_mem_path = model_mem_path
+        self.warmup_epochs = 0
 
     def train(self):
+        warmup_epochs = self.warmup_epochs
 
         tt.csv_open('out-stats.csv')
         tt.csv_write_header()
         best_epoch = 0
         best_ap = 0
-        for e in range(self.epochs):
+        for e in range(self.epochs + warmup_epochs):
             print(f'epoch {e}:')
 
-            if e >= 1: # TODO 没有用
+            if e >= 1 + warmup_epochs:
                 print("[TEST] torch.cuda.nvtx.range_push")
-                # driver.cudaProfilerStart()
-                torch.cuda.nvtx.range_push("Epoch {}".format(e))
-            # 训练代码
-
-            # print()
+                cuda.start_profiler()
 
             torch.cuda.synchronize()
             print("[epoch start]")
@@ -246,7 +244,7 @@ class LinkPredTrainer(object):
             self.ctx.train()
             self.model.train()
             if self.g.mem is not None:
-                self.g.mem.reset()
+                self.g.mem.reset() # TODO 存储需要处理mem mailbox reset
             if self.g.mailbox is not None:
                 self.g.mailbox.reset()
 
@@ -260,127 +258,114 @@ class LinkPredTrainer(object):
                 batch = next(edge_iter)
                 batch.neg_nodes = self.neg_sampler(len(batch))
                 while True:
-                    # print(f"Batch {batch._b_id} - len(batch) {len(batch)}")
-                    if batch._b_id == 0:
-                        if tglite.config.PERF_CEIL: # TODO only TGN
-                            self.model._init_samples0_2_perfCeil()
-                    
-                    try:
-                        # import pdb;pdb.set_trace()
-                        next_batch = next(edge_iter)
-                        next_batch.neg_nodes = self.neg_sampler(len(next_batch)) # 这里要用next batch 才是三倍
-
-                    except StopIteration:
-                        print("[epoch end]")
-                        break
-            # with nvtx.annotate("TRAIN-for", color="green"): # 消融一下
-            #     for batch in tg.iter_edges(self.g, size=self.bsize, end=self.train_end):
-
-                    # test with nsys WYQ TODO
-                    # if (True and tglite.config.ON_HETER): # TODO
-                    if (True): # TODO
-                    # if (False): # TODO
-                        # print(f"Batch {batch._b_id}")
-                        if (e > 2 and batch._b_id > 5):
-                        # if (batch._b_id > 5):
-
-                            # 训练代码
-                            if e >= 1:
-                                print("[TEST] torch.cuda.nvtx.range_pop")
-                                # driver.cudaProfilerStop()
-                                torch.cuda.nvtx.range_pop()
-
-                            print("[end] time")
-                            tt.t_batch_num_5 = tt.elapsed(t_loop)
-                            tt.print_batch_num_5()
-                            prefix='  '
-                            print(f"{prefix}batch5 | max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
-                            print(f"{prefix}batch5 | cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
-                            exit()
-
-                    t_start = tt.start()
-                    # batch.neg_nodes = self.neg_sampler(len(batch))
-
-                    tt.t_prep_batch += tt.elapsed(t_start)
-
-                    t_start = tt.start()
-
-                    self.optimizer.zero_grad()
-
-                    if tglite.config.PERF_CEIL_BASE: # TODO only TGN
+                    with nvtx.annotate(f"Batch {batch._b_id}", color="green"):
+                        # print(f"Batch {batch._b_id} - len(batch) {len(batch)}")
                         if batch._b_id == 0:
-                            self.model._load_new_perfCeilBase(batch) # 在函数内还是改的next
-                        else: 
-                            assert self.ctx.perfCeilBase_thread is not None
-                            self.ctx.perfCeilBase_thread.join()
-                        self.ctx.curr_blk_head = self.ctx.next_blk_head
-                        self.ctx.curr_blk_tail = self.ctx.next_blk_tail
-                        self.ctx.curr_mem = self.ctx.next_mem
-                    
-                        def perfCeilBase_preloading(self, batch):
-                            # print(f"preloading and sampling batch {batch._b_id} - len(batch) {len(batch)}")
-                            head = batch.block(self.ctx)
-                            for i in range(self.model.num_layers):
-                                tail = head if i == 0 \
-                                    else tail.next_block(include_dst=True, use_dst_times=False)
-                                # print(f"batch {batch._b_id} tail._dstnodes {tail._dstnodes.shape}")
-                                tail = tg.op.dedup(tail) if self.model.dedup else tail
-                                with nvtx.annotate("sample", color="purple"):
-                                    tail = self.model.sampler.sample(tail) # 先去重再采样
-                            with torch.cuda.StreamContext(torch.cuda.Stream()):
-                                
-                                tg.op.preload(head, use_pin=True)
+                            if tglite.config.PERF_CEIL: # TODO only TGN
+                                self.model._init_samples0_2_perfCeil()
+                            elif tglite.config.TEST_BLKM:
+                                self.model._init_samples0_TEST_BLKM()
+                        
+                        try:
+                            # import pdb;pdb.set_trace()
+                            next_batch = next(edge_iter)
+                            next_batch.neg_nodes = self.neg_sampler(len(next_batch)) # 这里要用next batch 才是三倍
 
-                                self.ctx.next_blk_tail = tail
-                                self.ctx.next_blk_head = head
-                                self.ctx.next_mem = tail.mem_data()
-                                perfCeilBase_preloadGPUData_event = torch.cuda.Event()
-                                perfCeilBase_preloadGPUData_event.record()
-                            perfCeilBase_preloadGPUData_event.synchronize()
+                        except StopIteration:
+                            print("[epoch end]")
+                            break
 
-                        # 提前取下一个batch add preload logic TODO
-                        with nvtx.annotate("threading preload nxt", color="purple"):
-                            # Sampling and preloading for next batch
-                            self.ctx.perfCeilBase_thread = threading.Thread(target=perfCeilBase_preloading, args=(self, next_batch))
-                            self.ctx.perfCeilBase_thread.start()
-                
-                    self.model.is_train = True
-                    pred_pos, pred_neg = self.model(batch)
-                    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                    tt.t_forward += tt.elapsed(t_start)
+                        # test with nsys WYQ TODO
+                        # if (True and tglite.config.ON_HETER): # TODO
+                        if (True): # TODO
+                        # if (False): # TODO
+                            # print(f"Batch {batch._b_id}")
+                            # if (e > 2 and batch._b_id > 5):
+                            if (batch._b_id > 5):
 
-                    t_start = tt.start()
-                    with nvtx.annotate("TRAIN-cal_loss", color="green"):
-                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                        targets = torch.cat([torch.ones_like(pred_pos), torch.zeros_like(pred_neg)], dim=0)
-                        preds = torch.cat([pred_pos, pred_neg], dim=0)
-                        loss = self.criterion(preds, targets)
-                        # wyq_refine
-                        # loss0 = self.criterion(pred_pos, torch.ones_like(pred_pos))
-                        # loss1 = self.criterion(pred_neg, torch.zeros_like(pred_neg))
-                        # combined_batch_size = pred_pos.size(0) + pred_neg.size(0)
-                        # loss_separated = (loss0 * pred_pos.size(0) + loss1 * pred_neg.size(0)) / combined_batch_size
-                        # print(f"loss {loss}")
-                        # print(f"loss {loss_separated}, loss0 {loss0}, loss1 {loss1}")
-                        epoch_loss += float(loss)
-                    with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
-                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                                # 训练代码
+                                if e >= 1 + warmup_epochs:
+                                    print("[TEST] torch.cuda.nvtx.range_pop")
+                                    cuda.stop_profiler()
 
-                        if tglite.config.PERF_CEIL: # TODO only TGN
-                            def preloading(self, _nids_cpu, _eids_cpu):
-                                # preload nfeat
-                                ## 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
-                                ## self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
-                                self.ctx._cur_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
-                                with nvtx.annotate("index_select", color="red"):
-                                    torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._cur_nfeat_pins)
-                                
-                                # preload efeat
-                                self.ctx._cur_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
-                                torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._cur_efeat_pins)
-                            
+                                if e > 2 + warmup_epochs:
+                                    tt.t_batch_num_5 = tt.elapsed(t_loop)
+                                    tt.print_batch_num_5()
+                                    prefix='  '
+                                    print(f"{prefix}batch5 | max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
+                                    print(f"{prefix}batch5 | cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
+                                    print("[end] time")
+                                    exit()
+
+                        t_start = tt.start()
+                        # batch.neg_nodes = self.neg_sampler(len(batch))
+
+                        tt.t_prep_batch += tt.elapsed(t_start)
+
+                        t_start = tt.start()
+
+                        self.optimizer.zero_grad()
+
+                        if tglite.config.PERF_CEIL_BASE: # TODO only TGN
+                            if batch._b_id == 0:
+                                self.model._load_new_perfCeilBase(batch) # 在函数内还是改的next
+                            else: 
+                                assert self.ctx.perfCeilBase_thread is not None
+                                self.ctx.perfCeilBase_thread.join()
+                            self.ctx.curr_blk_head = self.ctx.next_blk_head
+                            self.ctx.curr_blk_tail = self.ctx.next_blk_tail
+                            self.ctx.curr_mem = self.ctx.next_mem
+                        
+                            def perfCeilBase_preloading(self, batch):
+                                # print(f"preloading and sampling batch {batch._b_id} - len(batch) {len(batch)}")
+                                head = batch.block(self.ctx)
+                                for i in range(self.model.num_layers):
+                                    tail = head if i == 0 \
+                                        else tail.next_block(include_dst=True, use_dst_times=False)
+                                    # print(f"batch {batch._b_id} tail._dstnodes {tail._dstnodes.shape}")
+                                    tail = tg.op.dedup(tail) if self.model.dedup else tail
+                                    with nvtx.annotate("sample", color="purple"):
+                                        tail = self.model.sampler.sample(tail) # 先去重再采样 # 为什么这里有通信?
+                                with torch.cuda.StreamContext(torch.cuda.Stream()):
+                                    
+                                    tg.op.preload(head, use_pin=True)
+
+                                    self.ctx.next_blk_tail = tail
+                                    self.ctx.next_blk_head = head
+                                    self.ctx.next_mem = tail.mem_data()
+                                    perfCeilBase_preloadGPUData_event = torch.cuda.Event()
+                                    perfCeilBase_preloadGPUData_event.record()
+                                perfCeilBase_preloadGPUData_event.synchronize()
+
                             # 提前取下一个batch add preload logic TODO
-                            with nvtx.annotate("threading preload nxt", color="purple"): # 取的是next batch
+                            with nvtx.annotate("threading preload nxt", color="purple"):
+                                # Sampling and preloading for next batch
+                                self.ctx.perfCeilBase_thread = threading.Thread(target=perfCeilBase_preloading, args=(self, next_batch))
+                                self.ctx.perfCeilBase_thread.start()
+                    
+                        self.model.is_train = True
+                        pred_pos, pred_neg = self.model(batch)
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        tt.t_forward += tt.elapsed(t_start)
+
+                        t_start = tt.start()
+                        with nvtx.annotate("TRAIN-cal_loss", color="green"):
+                            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                            targets = torch.cat([torch.ones_like(pred_pos), torch.zeros_like(pred_neg)], dim=0)
+                            preds = torch.cat([pred_pos, pred_neg], dim=0)
+                            loss = self.criterion(preds, targets)
+                            # wyq_refine
+                            # loss0 = self.criterion(pred_pos, torch.ones_like(pred_pos))
+                            # loss1 = self.criterion(pred_neg, torch.zeros_like(pred_neg))
+                            # combined_batch_size = pred_pos.size(0) + pred_neg.size(0)
+                            # loss_separated = (loss0 * pred_pos.size(0) + loss1 * pred_neg.size(0)) / combined_batch_size
+                            # print(f"loss {loss}")
+                            # print(f"loss {loss_separated}, loss0 {loss0}, loss1 {loss1}")
+                            epoch_loss += float(loss)
+                        with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
+                            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+
+                            if tglite.config.TEST_BLKM: # TODO only TGN
                                 if self.model.sampling_thread is not None:
                                     self.model.sampling_thread.join()
                                     assert self.model.curr_data == None # 表示第一轮预采样/后来next batch 采样的结果已经被使用了
@@ -395,20 +380,50 @@ class LinkPredTrainer(object):
                                         _eids_nxt, _idx_eids_nxt, \
                                         _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
                                         _nids_nxt, _idx_nids_nxt = self.model.curr_data
+                            
+                            if tglite.config.PERF_CEIL: # TODO only TGN
+                                def preloading(self, _nids_cpu, _eids_cpu):
+                                    # preload nfeat
+                                    ## 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
+                                    ## self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
+                                    self.ctx._cur_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
+                                    with nvtx.annotate("index_select", color="red"):
+                                        torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._cur_nfeat_pins)
+                                    
+                                    # preload efeat
+                                    self.ctx._cur_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
+                                    torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._cur_efeat_pins)
+                                
+                                # 提前取下一个batch add preload logic TODO
+                                with nvtx.annotate("threading preload nxt", color="purple"): # 取的是next batch
+                                    if self.model.sampling_thread is not None:
+                                        self.model.sampling_thread.join()
+                                        assert self.model.curr_data == None # 表示第一轮预采样/后来next batch 采样的结果已经被使用了
+                                        self.model.curr_data = self.model.next_data
+                                        self.model.next_data = None # 指示当前batch 可以开始下一轮预采样了
+                                        if self.model.curr_data is not None: # 如果还有下一个batch
+                                            _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
+                                            prev_eids, next_eids, \
+                                            prev_nodes, next_nodes, \
+                                            unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                                            _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+                                            _eids_nxt, _idx_eids_nxt, \
+                                            _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+                                            _nids_nxt, _idx_nids_nxt = self.model.curr_data
 
-                                        # Sampling for curr batch(本质是在上一个batch 采样cur)
-                                        self.ctx.preload_thread = threading.Thread(target=preloading, args=(self, _nids_cpu, _eids_cpu))
-                                        self.ctx.preload_thread.start()
+                                            # Sampling for curr batch(本质是在上一个batch 采样cur)
+                                            self.ctx.preload_thread = threading.Thread(target=preloading, args=(self, _nids_cpu, _eids_cpu))
+                                            self.ctx.preload_thread.start()
 
-                        loss.backward()
-                        # torch.cuda.empty_cache()
-                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-                        self.optimizer.step()
-                        tt.t_backward += tt.elapsed(t_start)
-                        # 更新下一轮batch
-                        batch = next_batch
-                    # print(f"cur-batch memory {torch.cuda.memory_allocated()/(2**20)}")
-                    # print(f"max-batch memory {torch.cuda.max_memory_allocated()/(2**20)}")
+                            loss.backward()
+                            # torch.cuda.empty_cache()
+                            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                            self.optimizer.step()
+                            tt.t_backward += tt.elapsed(t_start)
+                            # 更新下一轮batch
+                            batch = next_batch
+                        # print(f"cur-batch memory {torch.cuda.memory_allocated()/(2**20)}")
+                        # print(f"max-batch memory {torch.cuda.max_memory_allocated()/(2**20)}")
             except StopIteration:
                 pass
             tt.t_loop = tt.elapsed(t_loop)

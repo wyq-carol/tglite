@@ -2,7 +2,7 @@ import torch
 import tglite as tg
 
 from torch import nn, Tensor
-from tglite.nn import TemporalAttnLayer, TemporalAttnLayer0_2_perfCeil, TemporalAttnLayer_2_perfCeil
+from tglite.nn import TemporalAttnLayer, TemporalAttnLayer0_2_perfCeil, TemporalAttnLayer_2_perfCeil, TemporalAttnLayer_precompute
 from tglite._stats import tt
 import threading
 
@@ -29,10 +29,20 @@ class TGN(nn.Module):
         self.dim_mail = 2 * self.dim_embed + self.dim_edge # self.dim_mail + self.dim_time == self.dim_mailbox
         self.dim_time = dim_time
         self.num_layers = num_layers
-        self.nfeat_map = None if dim_node == dim_embed else nn.Linear(dim_node, dim_embed)
+        # self.nfeat_map = None if dim_node == dim_embed else nn.Linear(dim_node, dim_embed)
+        self.nfeat_map = nn.Linear(dim_node, dim_embed)
         self.mem_cell = GRUCell(2 * dim_embed + dim_edge + dim_time, dim_embed)
         self.mem_time_encode = tg.nn.TimeEncode(dim_time)
-        if tglite.config.PERF_CEIL:
+        if tglite.config.TEST_BLKM:
+            # TODO
+            self.attn0 = TemporalAttnLayer0_2_perfCeil(ctx,
+                            num_heads=num_heads,
+                            dim_node=dim_embed,
+                            dim_edge=dim_edge,
+                            dim_time=dim_time,
+                            dim_out=dim_embed,
+                            dropout=dropout)
+        elif tglite.config.PERF_CEIL:
             self.attn0 = TemporalAttnLayer0_2_perfCeil(ctx,
                               num_heads=num_heads,
                               dim_node=dim_embed,
@@ -40,6 +50,13 @@ class TGN(nn.Module):
                               dim_time=dim_time,
                               dim_out=dim_embed,
                               dropout=dropout)
+            # self.attn1 = TemporalAttnLayer0_2_perfCeil(ctx,
+            #                     num_heads=num_heads,
+            #                     dim_node=dim_embed,
+            #                     dim_edge=dim_edge,
+            #                     dim_time=dim_time,
+            #                     dim_out=dim_embed,
+            #                     dropout=dropout)
             self.attn1 = TemporalAttnLayer_2_perfCeil(ctx,
                                 num_heads=num_heads,
                                 dim_node=dim_embed,
@@ -57,8 +74,17 @@ class TGN(nn.Module):
                     dropout=dropout)
                 for i in range(num_layers)])
         else:
+            # self.attn = nn.ModuleList([
+            #     TemporalAttnLayer(ctx,
+            #         num_heads=num_heads,
+            #         dim_node=dim_embed,
+            #         dim_edge=dim_edge,
+            #         dim_time=dim_time,
+            #         dim_out=dim_embed,
+            #         dropout=dropout)
+            #     for i in range(num_layers)])
             self.attn = nn.ModuleList([
-                TemporalAttnLayer(ctx,
+                TemporalAttnLayer_precompute(ctx,
                     num_heads=num_heads,
                     dim_node=dim_embed,
                     dim_edge=dim_edge,
@@ -105,7 +131,9 @@ class TGN(nn.Module):
 
     def forward(self, batch: tg.TBatch) -> Tensor:
         # print(f"    HERE forward")
-        if tglite.config.PERF_CEIL: # if tglite.config.PERF_CEIL and self.is_train: # 训练推理需要调用一个东西
+        if tglite.config.TEST_BLKM:
+            return self.forward_test_blkm(batch)
+        elif tglite.config.PERF_CEIL: # if tglite.config.PERF_CEIL and self.is_train: # 训练推理需要调用一个东西
             return self.forward2_perfCeil(batch) # TODO
         elif tglite.config.ON_HETER:
             return self.forward0(batch)
@@ -722,6 +750,32 @@ class TGN(nn.Module):
         with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
             batch.g.mailbox.store(uniq, mail, mail_ts, uniq, nbrs, batch._b_id)
 
+    def save_raw_msgs_TEST_BLKM(self, batch: tg.TBatch):
+        sdev = batch.g.storage_device()
+        mem = batch.g.mem.data
+
+        with nvtx.annotate("save raw msgs-block_adj", color="red"):
+            # 由于new blk 我肯定load了很多没用的东西
+            blk = batch.block_adj(self.ctx)
+        with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
+            blk = tg.op.coalesce(blk, by='latest')
+
+        with nvtx.annotate("save raw msgs-uniq nbrs", color="red"):
+            # 写回数据量实际很小 μs级别
+            uniq = torch.from_numpy(blk.dstnodes).long().to(sdev)
+            nbrs = torch.from_numpy(blk.srcnodes).long().to(sdev)
+            
+            # TODO **去冗余重建_mailbox**
+            # self.dstnodes2latestNbrs[uniq, 0] = nbrs
+            # eids = torch.from_numpy(blk.eid).long().to(sdev)
+            # self.dstnodes2latestNbrs[uniq, 1] = eids
+
+            efeat = self.ctx.manager_efeat.get_data_batch(blk.eid)
+            mail = torch.cat([mem[uniq], mem[nbrs], efeat.to("cpu")], dim=1)
+            mail_ts = torch.from_numpy(blk.ets).to(sdev)
+        with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
+            batch.g.mailbox.store(uniq, mail, mail_ts, uniq, nbrs, batch._b_id)
+
     def save_raw_msgs2_perfCeil(self, batch: tg.TBatch):
         sdev = batch.g.storage_device()
         mem = batch.g.mem.data
@@ -785,30 +839,23 @@ class TGN(nn.Module):
         if self._new_samples is None:
             file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
             self._new_samples = torch.load(file_path)
-        
-            example_inputs = (
-                torch.randn(16277, 200),
-                torch.randn(91798),
-                torch.randn(803, 100),
-                torch.randn(91798),
-                torch.randn(7457, 172),
-                torch.randn(91798),
-                torch.randn(51315, 100),
-                torch.randn(91798),
-                # Q= torch.Size([16277, 200])
-                # idx= torch.Size([91798])
-                # node_unique= torch.Size([803, 100])
-                # node_inverse= torch.Size([91798])
-                # efeat_unique= torch.Size([7457, 172])
-                # efeat_inverse= torch.Size([91798])
-                # time_unique= torch.Size([51315, 100])
-                # time_inverse= torch.Size([91798])
-            ) # TODO
             # 消融一下
+            torch.set_float32_matmul_precision('high') # TODO tensorcore
             self.ctx.compiled_forward_redundancy_mul = torch.compile(self.attn0.compute_z_ours, dynamic=True)
 
             import warnings
             warnings.filterwarnings("ignore", category=UserWarning, module="torch.overrides")
+    
+    def _init_samples0_TEST_BLKM(self):
+        self.curr_data = self._new_samples[0]
+        _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
+        prev_eids, next_eids, \
+        prev_nodes, next_nodes, \
+        unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+        _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+        _eids_nxt, _idx_eids_nxt, \
+        _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+        _nids_nxt, _idx_nids_nxt = self.curr_data    
     
     def _init_samples0_2_perfCeil(self):
             self.curr_data = self._new_samples[0]
@@ -823,11 +870,11 @@ class TGN(nn.Module):
             # preload nfeat
             ## 1 layer: self.layer == 0 TODO 不过preload 一般只preload 1层就可以
             ## self.ctx._nxt_nfeat_pins = self.ctx._get_nfeat_pin(self.layer, len(_nids_cpu), self._g.nfeat.shape[1])
-            self.ctx._cur_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.nfeat.shape[1])
+            self.ctx._cur_nfeat_pins = self.ctx._get_nfeat_pin(0, len(_nids_cpu), self.ctx._g.dim_node)
             with nvtx.annotate("index_select", color="red"):
                 torch.index_select(self.ctx._g.nfeat, 0, _nids_cpu, out=self.ctx._cur_nfeat_pins)
             # preload efeat
-            self.ctx._cur_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.efeat.shape[1])
+            self.ctx._cur_efeat_pins = self.ctx._get_efeat_pin(0, len(_eids_cpu), self.ctx._g.dim_edge)
             with nvtx.annotate("index_select", color="red"):
                 torch.index_select(self.ctx._g.efeat, 0, _eids_cpu, out=self.ctx._cur_efeat_pins)
     
@@ -1117,12 +1164,24 @@ class TGN(nn.Module):
                             time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True) # TODO _unique_ets, _reverse_ets
                             '''
                             # input node unique _reverse_nids[:tail.num_dst()]
+                            # output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse, time_d_unique, time_d_inverse)
                             output = self.attn0(tail, nodeData, _reverse_nids.to("cuda"), tail.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
                             # output = self.attn0(tail)
                         with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                             output = tail.run_hooks(output)
                     tail.clear_data()
                     tail.clear_hooks()
+                    if self.num_layers > 1:
+                        num_dst = head.num_dst()
+                        head.dstdata['h'] = output[:num_dst]
+                        head.srcdata['h'] = output[num_dst:]
+                        # head.srcdata['h'] = output
+                        # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
+                        # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
+                        output = self.attn1(head)
+                        output = head.run_hooks(output)
+                        head.clear_data()
+                        head.clear_hooks()
                 embeds = output
 
                 del head
@@ -1209,6 +1268,12 @@ class TGN(nn.Module):
                                 output = tail.run_hooks(output)
                         tail.clear_data()
                         tail.clear_hooks()
+                        if self.num_layers > 1:
+                            # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
+                            output = self.attn1(head)
+                            output = head.run_hooks(output)
+                            head.clear_data()
+                            head.clear_hooks()
                     embeds = output
                     del head
                     del tail
@@ -1236,6 +1301,330 @@ class TGN(nn.Module):
                     with nvtx.annotate("save raw msgs", color="purple"):
                         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                         self.save_raw_msgs(batch)
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                    tt.t_post_update += tt.elapsed(t_start)
+
+                    return scores
+
+
+
+    def forward_test_blkm(self, batch: tg.TBatch) -> Tensor:
+        def sampling(self, _b_id):
+            # _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
+            # prev_eids, next_eids, \
+            # prev_nodes, next_nodes, \
+            # unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+            # _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+            # _eids_nxt, _idx_eids_nxt, \
+            # _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+            # _nids_nxt, _idx_nids_nxt = self._new_samples[_b_id]
+            with nvtx.annotate("thread sampling", color="purple"):
+                if _b_id > len(self._new_samples):
+                    self.next_data = None
+                self.next_data = self._new_samples[_b_id]
+
+        # print(f"batch {batch._b_id}")
+
+        # 先集成优化，再节约已经GPU上的load feat
+        with nvtx.annotate("forward", color="purple"):
+
+            # 提前取下一个batch & TODO add preload logic
+            if self.is_train:
+                with nvtx.annotate("thread sampling nxt", color="purple"):
+                    # print(f"    here thread sampling nxt")
+                    assert self.curr_data is not None # 同步点在support.py 的preload
+                    _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
+                    prev_eids, next_eids, \
+                    prev_nodes, next_nodes, \
+                    unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                    _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
+                    _eids_nxt, _idx_eids_nxt, \
+                    _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
+                    _nids_nxt, _idx_nids_nxt = self.curr_data
+                    self.curr_data = None
+                    # Sampling for next batch 每次只预取一个batch
+                    assert self.next_data == None
+                    self.sampling_thread = threading.Thread(target=sampling, args=(self, batch._b_id + 1,))
+                    self.sampling_thread.start()
+
+                # # offline sample
+                with nvtx.annotate("offline sample", color="purple"):
+                    # TODO
+                    #  TBlock def __init__(self, ctx: 'TContext', layer: int, dstnodes: np.ndarray, dsttimes: np.ndarray,
+                    #  dstindex: np.ndarray = None, srcnodes: np.ndarray = None,
+                    #  eid: np.ndarray = None, ets: np.ndarray = None):
+                    
+                    '''
+                    # new_sample = (
+                    #     b_inv_idx,
+                    #     b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta,
+                    #     prev_eids, next_eids,
+                    #     prev_nodes, next_nodes,
+                    #     _unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets,
+                    #     _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu,
+                    #     _eids_nxt, _idx_eids_nxt,
+                    #     _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu,
+                    #     _nids_nxt, _idx_nids_nxt
+                    # )
+                    '''
+
+                    # TODO add two-layer offline
+                    # TODO new Sampler TODO
+                    with nvtx.annotate("offline sample-TBlock", color="purple"):
+                        head = TBlock(self.ctx, 0, b_dstnodes.numpy(), b_dsttimes.numpy(), b_dstindex.numpy(), b_srcnodes.numpy(), b_eids.numpy(), b_ets.numpy())
+                    with nvtx.annotate("dedup1 offline sample", color="purple"):
+                        for i in range(self.num_layers):
+                            tail = head if i == 0 \
+                            else tail.next_block(include_dst=True, use_dst_times=False) # TODO 好像不需要add two-layer offline
+                            tg.op.dedup1_offlineSample(tail, _inv_idx) 
+
+                with nvtx.annotate("update mem", color="purple"):
+                    # TODO
+                    # with nvtx.annotate("preload data/feat", color="purple"):
+                    #     # if self.ctx.preload_thread is not None:
+                    #     #     self.ctx.preload_thread.join()
+
+                    #     curr = head
+                    #     while curr.next is not None:
+                    #         curr = curr.next
+                    #     while curr is not None:
+                    #         if curr.num_dst() > 0:
+                    #             if curr.has_nbrs():
+                    #                 if curr.next is None:
+                    #                     with nvtx.annotate("preload nfeat", color="red"):
+                    #                         curr._load_nfeat0_uniqLoadFeat_alreadyOnGPU(_unique_nids, _reverse_nids, _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, _nids_nxt, _idx_nids_nxt, use_pin=True)
+                    #                 with nvtx.annotate("preload efeat", color="red"):
+                    #                     # TODO refine efeat alike nfeat
+                    #                     curr._load_efeat0_uniqLoadFeat_alreadyOnGPU(unique_eids, _reverse_eids, _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, _eids_nxt, _idx_eids_nxt, use_pin=True)
+                    #         curr = curr.prev
+
+                    if tail.num_dst() > 0:
+
+                        with nvtx.annotate("cal mail_delta", color="red"): # TODO
+                            unique_mail_ts = tail.g.mailbox.time[_unique_nids] # on cpu
+                            delta = unique_mail_ts - tail.g.mem.time[_unique_nids]
+                            mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to("cuda"))
+                        # TODO divide pipelines
+                        # TODO build new pipelines
+                        # stage0_index = math.floor(len(unique_nodes)/3)
+                        # stage_indices = [(0, stage0_index), (stage0_index, math.floor(len(unique_nodes)*2/3)), (math.floor(len(unique_nodes)*2/3), len(unique_nodes))] 
+                        stage0_index = math.floor(len(_unique_nids)/2)
+                        stage_indices = [(0, stage0_index), (stage0_index, len(_unique_nids))] 
+                        # pre-alloc
+                        # max_size = math.ceil(len(unique_nodes)/2)
+                        # pre_allocated_mem = torch.empty((max_size, 100), device=cdev)
+                        # 0阶段通信
+                        with nvtx.annotate(f"memUpdStage_comm_{0}", color="green"):
+                            unique_nodes_slice = _unique_nids[0:stage0_index]
+                            # all on cpu
+                            cur_mail_mem = tail._load_mail_mem_data_slice(unique_nodes_slice)
+                            # print(f"cur_mail_mem {cur_mail_mem.size()}")
+                        # for 循环
+                        comp_stream_memUpd = torch.cuda.Stream()
+                        comm_stream_memUpd = torch.cuda.Stream()
+                        nxt_mail_mem = None
+                        mems = []
+                        for i, (start_idx, nxt_idx) in enumerate(stage_indices):
+                            with nvtx.annotate(f"Stage_{i}", color="blue"):
+                                # nxt阶段通信
+                                if i < len(stage_indices) - 1:
+                                    with torch.cuda.stream(comm_stream_memUpd), nvtx.annotate(f"memUpdStage_comm_{i+1}", color="green"):
+                                        nxt_start_idx, nxt_end_idx = stage_indices[i + 1]
+                                        nxt_unique_nodes_slice = _unique_nids[nxt_start_idx:nxt_end_idx]
+                                        # all on cpu
+                                        nxt_mail_mem = tail._load_mail_mem_data_slice(nxt_unique_nodes_slice)
+                                        # print(f"nxt_mail_mem {nxt_mail_mem.size()}")
+                                # cur阶段计算
+                                with torch.cuda.stream(comp_stream_memUpd), nvtx.annotate(f"memUpdStage_comp_{i}", color="red"):
+                                    cur_mail = torch.cat([cur_mail_mem[:, :self.dim_mail], mail_delta[start_idx: nxt_idx]], dim=1)
+                                    cur_mem = cur_mail_mem[:, self.dim_mail:]
+                                    mem = self.mem_cell(cur_mail, cur_mem)
+                                mems.append(mem)
+                                torch.cuda.synchronize()
+                                # 在nxt阶段使用通信好的张量
+                                if nxt_mail_mem is not None:
+                                    cur_mail_mem = nxt_mail_mem
+                                    nxt_mail_mem = None
+                        torch.cuda.current_stream().wait_stream(comp_stream_memUpd)
+                        mem = torch.cat(mems)
+                        # assert torch.allclose(mem_standard, mem) # accuracy test pass! \O/
+                        # print()
+
+                        # 写回也可以pipeline TODO 不一定有必要，可以和后面的计算掩盖
+                        tail.g.mem.update(_unique_nids, mem, unique_mail_ts) # 目前为写回CPU
+
+                        # no scatter
+                        # mem = mem[_reverse_nids]
+
+                # no scatter    
+                # 替换tail.nfeat() 
+                tail_nfeat = self.ctx.manager_nfeat.get_data_batch(_unique_nids)
+                nfeat = tail_nfeat if self.nfeat_map is None else self.nfeat_map(tail_nfeat)
+                # 替换tail.efeat()
+                tail_efeat = self.ctx.manager_efeat.get_data_batch(unique_eids)
+
+                # print(f"_reverse_nids[:tail.num_dst()] {_reverse_nids[:tail.num_dst()].shape}")
+                # print(f"nfeat[:tail.num_dst()] {nfeat[:tail.num_dst()].shape}") # \o/ acc success! test passed!
+                # print()
+
+                ''' 
+                tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+                tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                '''
+                # no scatter
+                nodeData = nfeat + mem
+                del nfeat
+                del mem
+
+                # # compute embeddings
+                # with nvtx.annotate("op aggr", color="purple"):
+                #     embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h') # 消融一下(对support.py的修改没有问题，这一模块rebase精度可以恢复)
+
+                with nvtx.annotate("op.aggregate", color="green"):
+                    output = None
+                    with nvtx.annotate("blk.apply", color="red"):
+                        with nvtx.annotate("blk.apply fn", color="red"):
+                            '''
+                            node_unique, node_inverse = torch.unique(tail.srcdata['h'], dim=0, return_inverse=True)
+                            efeat_unique, efeat_inverse = torch.unique(tail.efeat(), dim=0, return_inverse=True) # 172的长度可能乘起来不够高效
+                            time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True) # TODO _unique_ets, _reverse_ets
+                            '''
+                            # input node unique _reverse_nids[:tail.num_dst()]
+                            # output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse, time_d_unique, time_d_inverse)
+                            output = self.attn0(tail, nodeData, _reverse_nids.to("cuda"), tail_efeat, _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
+                            # output = self.attn0(tail)
+                        with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
+                            output = tail.run_hooks(output)
+                    tail.clear_data()
+                    tail.clear_hooks()
+                    if self.num_layers > 1:
+                        num_dst = head.num_dst()
+                        head.dstdata['h'] = output[:num_dst]
+                        head.srcdata['h'] = output[num_dst:]
+                        # head.srcdata['h'] = output
+                        # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
+                        # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
+                        output = self.attn1(head)
+                        output = head.run_hooks(output)
+                        head.clear_data()
+                        head.clear_hooks()
+                embeds = output
+
+                del head
+                del tail
+
+                # compute scores
+                with nvtx.annotate("compute score", color="purple"):
+                    src, dst, neg = batch.split_data(embeds) # 这里还可以去冗余
+                    scores = self.edge_predictor(src, dst)
+                    if neg is not None:
+                        scores = (scores, self.edge_predictor(src, neg))
+                del embeds
+                del src
+                del dst
+                del neg
+                with nvtx.annotate("save raw msgs", color="purple"):
+                    # 不要先拿到数据，先
+                    self.save_raw_msgs_TEST_BLKM(batch)
+                    # self.save_raw_msgs0_no_redundant_memUpd(batch)
+                return scores
+            else:
+                with nvtx.annotate("forward", color="purple"):
+                    # setup message passing
+                    with nvtx.annotate("dedup and cache", color="purple"):
+
+                        head = batch.block(self.ctx)
+
+                        for i in range(self.num_layers):
+                            tail = head if i == 0 \
+                                else tail.next_block(include_dst=True, use_dst_times=False)
+                            if tglite.config.ON_STATISTIC:
+                                tail, inv_idx = tg.op.dedup_statistic(tail) if self.dedup else tail
+                                with nvtx.annotate("sample", color="purple"):
+                                    tail = self.sampler.sample(tail) # 先去重再采样
+                                # 1. 统计热节点
+                                node_centric_skew(tail._dstnodes, tail._srcnodes)
+                                # 2. 将采样完整offload 出去 WYQ_TODO: 保存一整个sample文件
+                                add_samples((inv_idx, tail._dstnodes, tail._dsttimes, tail._dstindex, tail._srcnodes, tail._eid, tail._ets))
+                            else: 
+                                tail = tg.op.dedup(tail) if self.dedup else tail
+                                with nvtx.annotate("sample", color="purple"):
+                                    tail = self.sampler.sample(tail) # 先去重再采样
+                                
+
+                    # load data / feats
+                    with nvtx.annotate("preload data/feat", color="purple"):
+                        # tg.op.preload(head, use_pin=True)
+                        tail_nfeat = self.ctx.manager_nfeat.get_data_batch(tail.allnodes())
+                        nfeat = tail_nfeat if self.nfeat_map is None else self.nfeat_map(tail_nfeat)
+                        tail_efeat = self.ctx.manager_efeat.get_data_batch(tail._eid)
+                    if tail.num_dst() > 0:
+                        # t_start = tt.start()
+                        with nvtx.annotate("update mem", color="purple"):
+                            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                            mem = self.update_memory(tail, batch)
+                            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        # tt.t_update_memory += tt.elapsed(t_start)
+                        # torch.cuda.empty_cache()
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        nodeData = nfeat + mem
+                        nodeData_unique, nodeData_inverse = torch.unique(nodeData, dim=0, return_inverse=True)
+                        tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
+                        tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                        edgeData_unique, edgeData_inverse = torch.unique(tail_efeat, dim=0, return_inverse=True)
+                        time_d_unique, time_d_inverse = torch.unique(tail.time_deltas(), dim=0, return_inverse=True)
+                        # tt.t_mem_update += tt.elapsed(t_start)
+                        del nfeat
+                        del mem
+
+                    # compute embeddings
+                    # with nvtx.annotate("op aggr", color="purple"):
+                    #     # torch.cuda.empty_cache() # del 的变量占用的空间?不会立即释放
+                    #     # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                    #     embeds = tg.op.aggregate(head, list(reversed(self.attn)), key='h')
+                    # ! 训练改 推理也要改 self.xxx_along with forward train
+                    with nvtx.annotate("op.aggregate", color="green"):
+                        output = None
+                        with nvtx.annotate("blk.apply", color="red"):
+                            with nvtx.annotate("blk.apply fn", color="red"):
+                                output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse, time_d_unique, time_d_inverse)
+                            with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
+                                output = tail.run_hooks(output)
+                        tail.clear_data()
+                        tail.clear_hooks()
+                        if self.num_layers > 1:
+                            # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
+                            output = self.attn1(head)
+                            output = head.run_hooks(output)
+                            head.clear_data()
+                            head.clear_hooks()
+                    embeds = output
+                    del head
+                    del tail
+
+                    # compute scores
+                    with nvtx.annotate("compute score", color="purple"):
+                        # torch.cuda.empty_cache()
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        src, dst, neg = batch.split_data(embeds)
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        scores = self.edge_predictor(src, dst)
+                        # torch.cuda.empty_cache()
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        if neg is not None:
+                            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                            scores = (scores, self.edge_predictor(src, neg))
+                            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                    del embeds
+                    del src
+                    del dst
+                    del neg
+
+                    # memory messages
+                    t_start = tt.start()
+                    with nvtx.annotate("save raw msgs", color="purple"):
+                        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                        self.save_raw_msgs_TEST_BLKM(batch)
                         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                     tt.t_post_update += tt.elapsed(t_start)
 

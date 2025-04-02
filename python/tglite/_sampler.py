@@ -35,6 +35,7 @@ class TSampler(object):
         
         :returns: updated block
         """
+        # TODO 我记得sample 好像有些性能问题 如果是在CPU上采样我的数据就总是在CPU上
         t_start = tt.start()
         if blk.num_dst() > 0:
             block = self._sampler.sample(blk._g._get_tcsr(), blk._dstnodes, blk._dsttimes)

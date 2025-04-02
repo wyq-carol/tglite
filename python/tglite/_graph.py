@@ -9,6 +9,8 @@ from ._frame import TFrame
 from ._memory import Memory
 from ._mailbox import Mailbox
 from ._utils import create_tcsr, check_edges_times, check_num_nodes
+import tglite.config
+from tglite._utils import INFO_LOG
 
 
 class TGraph(object):
@@ -26,20 +28,27 @@ class TGraph(object):
         """
         check_edges_times(edges, times)
         self._num_nodes = check_num_nodes(edges, num_nodes)
-        self._efeat_frame = TFrame(dim=edges.shape[0])
-        self._nfeat_frame = TFrame(dim=self._num_nodes)
-        self._edata = TFrame(dim=edges.shape[0])
-        self._ndata = TFrame(dim=self._num_nodes)
-        self._edges = edges
-        self._times = times
+        if tglite.config.TEST_BLKM:
+            self._num_edges = None
+            self.dim_edge = None
+            self.dim_node = None
+        else:
+            self._efeat_frame = TFrame(dim=edges.shape[0])
+            self._nfeat_frame = TFrame(dim=self._num_nodes)
+            self._edata = TFrame(dim=edges.shape[0])
+            self._ndata = TFrame(dim=self._num_nodes)
+
+        self._edges = edges # TODO 不必如此锱铢必较 # edges 二维array 多对(src, dst)
+        self._times = times # time 信息 一维array
         self._tcsr = None
         self._mem = None
         self._mailbox = None
         self._storage_dev = torch.device('cpu')
         self._compute_dev = torch.device('cpu')
-
-        self._g_edata = None
-        self._g_ndata = None
+        
+        if tglite.config.TEST_BLKM == 0:
+            self._g_edata = None
+            self._g_ndata = None
 
     @property
     def get_device(self):

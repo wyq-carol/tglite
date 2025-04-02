@@ -9,7 +9,9 @@ from tgn import TGN
 import nvtx
 from tglite.gpu_mem_track import *
 import tglite.config
-from tglite.memory_management import *
+from tglite.blockMgrs import *
+import pandas as pd
+from pathlib import Path
 ### arguments
 
 if __name__ == "__main__":
@@ -42,6 +44,7 @@ if __name__ == "__main__":
     parser.add_argument('--on-statistic', type=int, default=0, help='is statistic on')
     parser.add_argument('--perf-ceil', type=int, default=0, help='using perf ceil')
     parser.add_argument('--perf-ceil-base', type=int, default=0, help='using perf ceil base')
+    parser.add_argument('--block-mem-on', type=int, default=0, help='using blk mem')
     args = parser.parse_args()
     print(args)
 
@@ -73,19 +76,93 @@ if __name__ == "__main__":
     tglite.config.OFFLINE_SAMPLE = int(args.offline_sample)
     tglite.config.PERF_CEIL = int(args.perf_ceil)
     tglite.config.PERF_CEIL_BASE = int(args.perf_ceil_base)
+    tglite.config.TEST_BLKM = int(args.block_mem_on)
     lines = f'' \
             f'PERF_CEIL {tglite.config.PERF_CEIL}, PERF_CEIL_BASE {tglite.config.PERF_CEIL_BASE}\n' \
             f'ON_HETER {tglite.config.ON_HETER}, OFFLINE_SAMPLE {tglite.config.OFFLINE_SAMPLE}\n' \
-            f'ON_STATISTIC {tglite.config.ON_STATISTIC}, ALL_ON_GPU {tglite.config.ALL_ON_GPU}\n'
+            f'ON_STATISTIC {tglite.config.ON_STATISTIC}, ALL_ON_GPU {tglite.config.ALL_ON_GPU}\n' \
+            f'TEST_BLKM {tglite.config.TEST_BLKM}\n'
     print(lines, end='')
     tglite.config.log_name = f"DATA_{DATA}_BS_{BATCH_SIZE}_NLAYER_{N_LAYERS}_NBR_{N_NBRS}_NHEAD_{N_HEADS}"
     tglite.config.log_dir = f"/home/volume/tglake_res/"
 
+
+    ### load graph
+
+    if tglite.config.TEST_BLKM:
+        """Create a TGraph with edges and timestamps loaded from path. Provided data should include
+        'src' 'dst' and 'time' columns."""
+        df = pd.read_csv(str(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv')))
+        src = df['src'].to_numpy().astype(np.int32).reshape(-1, 1)
+        dst = df['dst'].to_numpy().astype(np.int32).reshape(-1, 1)
+        etime = df['time'].to_numpy().astype(np.float32)
+        del df
+
+        edges = np.concatenate([src, dst], axis=1)
+        del src
+        del dst
+
+        g = tg.TGraph(edges, etime)
+        print('num edges:', g.num_edges())
+        print('num nodes:', g.num_nodes())
+
+    else:
+        g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
+
+
+    ### init blk manager
+
+    if tglite.config.TEST_BLKM:
+        # TODO A100 40G 目前只支持efeat_dim = 172
+        shared_pool = BlockPool(total_mem_gb=20, block_elements=4300)
+    
+        manager_nfeat = BlockManager(shared_pool, feature_size=100, max_manager_index=g.num_nodes())  # 4096/256=16 slots/block
+        manager_efeat = BlockManager(shared_pool, feature_size=172, max_manager_index=g.num_edges())  # 4096/128=32 slots/block
+
+
     ### load data
 
-    g = support.load_graph(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edges.csv'))
 
-    if tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
+    if tglite.config.TEST_BLKM:
+        # support.load_feats
+        edge_feats = None
+        node_feats = None
+        if Path(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edge_features.pt')).exists():
+            edge_feats = torch.load(os.path.join(DATA_PATH, f'/home/volume/{DATA}/edge_features.pt'))
+            edge_feats = edge_feats.type(torch.float32)
+        elif DATA in ['mooc', 'lastfm']:
+            edge_feats = torch.randn(g.num_edges(), 128, dtype=torch.float32)
+        elif DATA in ['wiki-talk', 'stackoverflow']:
+            edge_feats = torch.randn(g.num_edges(), 172, dtype=torch.float32)
+
+        if DATA in ['wiki-talk']:
+            node_feats = torch.randn(g.num_nodes(), 100, dtype=torch.float32)
+        elif Path(os.path.join(DATA_PATH, f'/home/volume/{DATA}/node_features.pt')).exists():
+            node_feats = torch.load(os.path.join(DATA_PATH, f'/home/volume/{DATA}/node_features.pt'))
+            node_feats = node_feats.type(torch.float32)
+        elif DATA in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk', 'stackoverflow']:
+            # node_feats = torch.randn(g.num_nodes(), edge_feats.shape[1], dtype=torch.float32)
+            node_feats = torch.randn(g.num_nodes(), 100, dtype=torch.float32)
+
+        print('edge feat:', None if edge_feats is None else edge_feats.shape)
+        print('node feat:', None if node_feats is None else node_feats.shape)
+        # g.efeat = edge_feats
+        # g.nfeat = node_feats
+        dim_efeat = edge_feats.shape[-1]
+        dim_nfeat = node_feats.shape[-1]
+        g.dim_edge = dim_efeat
+        g.dim_node = dim_nfeat
+
+        manager_nfeat.init(torch.arange(g.num_nodes()), node_feats)
+        manager_efeat.init(torch.arange(g.num_edges()), edge_feats)
+
+
+        g.set_compute(device)
+
+        g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat) # mailbox, mem on cpu
+        g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
+
+    elif tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu
         dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
         dim_nfeat = g.nfeat.shape[1]
@@ -156,6 +233,7 @@ if __name__ == "__main__":
 
         g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat, device)
         g.mem = tg.Memory(g.num_nodes(), DIM_EMBED, device)
+
     else:
         support.load_feats(g, "cpu", DATA, DATA_PATH)
         dim_efeat = 0 if g.efeat is None else g.efeat.shape[1]
@@ -168,7 +246,7 @@ if __name__ == "__main__":
         if args.move:
             g.move_data(device)
 
-    tglite.config.num_nodes = g.nfeat.shape[0]
+    tglite.config.num_nodes = g.num_nodes()
 
     z = None
     # z = torch.zeros(1).float().to(device)
@@ -178,9 +256,14 @@ if __name__ == "__main__":
     ctx.need_sampling(True)
     ctx.enable_time_precompute(OPT_TIME)
     ctx.set_time_window(TIME_WINDOW)
+    if tglite.config.TEST_BLKM:
+        ctx.set_blkm_nfeat(manager_nfeat)
+        ctx.set_blkm_efeat(manager_efeat)
 
 
     ### model
+
+
     sampler = tg.TSampler(N_NBRS, strategy=SAMPLING, num_threads=N_THREADS)
     model = TGN(ctx,
         dim_node=dim_nfeat,
@@ -192,22 +275,21 @@ if __name__ == "__main__":
         num_heads=N_HEADS,
         dropout=DROPOUT)
     model = model.to(device)
+    if tglite.config.TEST_BLKM:
+        model._load_new_samples2() # 显存占用很小 & all ready on GPU
     if tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         model._load_new_samples2()
     if tglite.config.OFFLINE_SAMPLE:
         model._load_new_samples()
     
-    # criterion = torch.nn.BCEWithLogitsLoss()
     criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARN_RATE)
-    # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
 
 
     ### training
 
     train_end, val_end = support.data_split(g.num_edges(), 0.7, 0.15)
     neg_sampler = lambda size: np.random.randint(0, g.num_nodes(), size)
-
 
     trainer = support.LinkPredTrainer(
         ctx, model, criterion, optimizer, neg_sampler,
@@ -216,8 +298,8 @@ if __name__ == "__main__":
 
     with nvtx.annotate("TRAIN", color="green"):
         trainer.train()
-    print(f"max memory {torch.cuda.max_memory_allocated()/(2**20)}")
-    print(f"cur memory {torch.cuda.memory_allocated()/(2**20)}")
+    print(f"max memory {torch.cuda.max_memory_allocated()/(2**20)} MB")
+    print(f"cur memory {torch.cuda.memory_allocated()/(2**20)} MB")
     d = torch.cuda.memory_stats(device)
     print(f'cur large_pool {sep(d["allocated_bytes.large_pool.peak"]).rjust(20)}')
     print(f'cur small_pool {sep(d["allocated_bytes.small_pool.peak"]).rjust(20)}')

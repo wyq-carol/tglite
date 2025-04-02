@@ -11,6 +11,7 @@ from ._context import TContext
 from ._stats import tt
 import nvtx
 from tglite.gpu_mem_track import *
+from tglite._utils import INFO_LOG
 
 
 # def find_last_message(uniq_nodes: np.ndarray, sorted_edges: np.ndarray):
@@ -26,9 +27,11 @@ def edge_view(blk: TBlock, data: Tensor) -> Tensor:
     :param blk:
     :param data:
     '''
-    blk._check_has_nbrs()
-    assert data.shape[0] == blk._dstdata.dim()
+    # blk._check_has_nbrs()
+    # assert data.shape[0] == blk._dstdata.dim()
     if blk._g.storage_device() != torch.device("cpu"):
+        # print(f"torch.save {blk._g_dstindex.shape}")
+        # torch.save(blk._g_dstindex, "blk._g_dstindex.pt")
         return data[blk._g_dstindex]
 
     idx = torch.from_numpy(blk._dstindex)
@@ -43,11 +46,13 @@ def edge_softmax(blk: TBlock, data: Tensor) -> Tensor:
     :param blk:
     :param data:
     '''
-    blk._check_has_nbrs()
-    size = blk._edata.dim()
-    assert data.shape[0] == size
+    # blk._check_has_nbrs()
+    # size = blk._edata.dim()
+    size = blk.num_src()
+    # assert blk._edata.dim() == blk.num_src()
     if blk._g.storage_device() != torch.device("cpu"):
         reindex = torch.unique(blk._g_dstindex, return_inverse=True)[1]
+        # print(f"edge_softmax reindex {reindex}")
         return torch_scatter.scatter_softmax(data, reindex, dim=0, dim_size=size)
 
     # 在这等我！
@@ -66,10 +71,11 @@ def edge_reduce(blk: TBlock, data: Tensor, op='sum') -> Tensor:
     :param blk:
     :param data:
     '''
-    blk._check_has_nbrs()
+    # blk._check_has_nbrs()
     assert op in ['sum', 'mean'], "currently only supports sum or mean"
-    assert data.shape[0] == blk._edata.dim()
-    size = blk._dstdata.dim()
+    # size = blk._dstdata.dim()
+    size = blk.num_dst()
+    # assert blk._dstdata.dim() == blk.num_dst()
     if blk._g.storage_device() != torch.device("cpu"):
         return torch_scatter.segment_coo(data, blk._g_dstindex, dim_size=size, reduce=op)
 
@@ -471,7 +477,6 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
     with nvtx.annotate("precompute_zeros", color="red"):
         cdev = ctx._g.compute_device()
         if ctx._training or not ctx._time_enabled:
-            # return encoder(True, None)
             return encoder(True, num)
             
             if ctx._z is not None:
@@ -485,6 +490,9 @@ def precomputed_zeros(ctx: TContext, id: int, encoder: Callable, num: int) -> Te
 
         time_table = ctx._time_tables.get(id) # id 为layer id
         if time_table is None:
+            print(f"encoder: {encoder}")
+            print(torch.arange(
+                ctx._time_window + 1, dtype=torch.float, device=cdev).shape)
             time_table = encoder(torch.arange(
                 ctx._time_window + 1, dtype=torch.float, device=cdev))
             ctx._time_tables[id] = time_table
