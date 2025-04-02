@@ -234,7 +234,7 @@ class LinkPredTrainer(object):
             print(f'epoch {e}:')
 
             if e == 1 + warmup_epochs:
-                # print("[TEST] torch.cuda.nvtx.range_push")
+                print("[TEST] torch.cuda.nvtx.range_push")
                 cuda.start_profiler()
 
             torch.cuda.synchronize()
@@ -284,8 +284,8 @@ class LinkPredTrainer(object):
                             if (batch._b_id > 5):
 
                                 # 训练代码
-                                if e == 1 + warmup_epochs:
-                                    # print("[TEST] torch.cuda.nvtx.range_pop")
+                                if batch._b_id == 6 and e == 1 + warmup_epochs:
+                                    print("[TEST] torch.cuda.nvtx.range_pop")
                                     cuda.stop_profiler()
 
                                 if e > 2 + warmup_epochs:
