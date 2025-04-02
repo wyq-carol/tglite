@@ -276,7 +276,7 @@ if __name__ == "__main__":
         dropout=DROPOUT)
     model = model.to(device)
     if tglite.config.TEST_BLKM:
-        model._load_new_samples2() # 显存占用很小 & all ready on GPU
+        model._load_new_samples_blkm() # 显存占用很小 & all ready on GPU
     if tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         model._load_new_samples2()
     if tglite.config.OFFLINE_SAMPLE:

@@ -2,7 +2,7 @@ import torch
 import tglite as tg
 
 from torch import nn, Tensor
-from tglite.nn import TemporalAttnLayer, TemporalAttnLayer0_2_perfCeil, TemporalAttnLayer_2_perfCeil, TemporalAttnLayer_precompute
+from tglite.nn import TemporalAttnLayer, TemporalAttnLayer0_2_perfCeil, TemporalAttnLayer_2_perfCeil, TemporalAttnLayer_precompute, TemporalAttnLayer_0_fusion1_testblkm
 from tglite._stats import tt
 import threading
 
@@ -35,7 +35,7 @@ class TGN(nn.Module):
         self.mem_time_encode = tg.nn.TimeEncode(dim_time)
         if tglite.config.TEST_BLKM:
             # TODO
-            self.attn0 = TemporalAttnLayer0_2_perfCeil(ctx,
+            self.attn0 = TemporalAttnLayer_0_fusion1_testblkm(ctx,
                             num_heads=num_heads,
                             dim_node=dim_embed,
                             dim_edge=dim_edge,
@@ -835,6 +835,11 @@ class TGN(nn.Module):
 
         return mem[inverse_indices]
 
+    def _load_new_samples_blkm(self):
+        if self._new_samples is None:
+            file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
+            self._new_samples = torch.load(file_path)
+    
     def _load_new_samples2(self):
         if self._new_samples is None:
             file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
@@ -852,6 +857,7 @@ class TGN(nn.Module):
         prev_eids, next_eids, \
         prev_nodes, next_nodes, \
         unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+        unique_dst_nodes, _reverse_dst_nodes, unique_src_nodes, _reverse_src_nodes, \
         _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
         _eids_nxt, _idx_eids_nxt, \
         _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
@@ -1333,10 +1339,12 @@ class TGN(nn.Module):
                 with nvtx.annotate("thread sampling nxt", color="purple"):
                     # print(f"    here thread sampling nxt")
                     assert self.curr_data is not None # 同步点在support.py 的preload
+                    # load 过来all on cpu
                     _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
                     prev_eids, next_eids, \
                     prev_nodes, next_nodes, \
                     unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                    _unique_dst_nodes, _reverse_dst_nodes, _unique_src_nodes, _reverse_src_nodes, \
                     _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
                     _eids_nxt, _idx_eids_nxt, \
                     _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
@@ -1489,10 +1497,12 @@ class TGN(nn.Module):
                             efeat_unique, efeat_inverse = torch.unique(tail.efeat(), dim=0, return_inverse=True) # 172的长度可能乘起来不够高效
                             time_unique, time_inverse = torch.unique(nbrs_time_feat, dim=0, return_inverse=True) # TODO _unique_ets, _reverse_ets
                             '''
-                            # input node unique _reverse_nids[:tail.num_dst()]
-                            # output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse, time_d_unique, time_d_inverse)
-                            output = self.attn0(tail, nodeData, _reverse_nids.to("cuda"), tail_efeat, _reverse_eids.to("cuda"), _unique_time_delta, _reverse_time_delta)
-                            # output = self.attn0(tail)
+                            # def forward(self, blk: TBlock, Q_node_idx, nodeData_dst, node_dst_inverse, nodeData_src, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
+                            x = torch.arange(tail.num_src()).to("cuda")
+                            _reverse_dst_nodes = _reverse_dst_nodes.to("cuda")
+                            b_dstindex = b_dstindex.to("cuda")
+                            Q_node_idx = _reverse_dst_nodes[b_dstindex[x]]
+                            output = self.attn0(tail, Q_node_idx, nodeData[_unique_dst_nodes], _reverse_dst_nodes, nodeData[_unique_src_nodes], _reverse_src_nodes.to("cuda"), tail_efeat, _reverse_eids.to("cuda"), _unique_time_delta.to("cuda"), _reverse_time_delta.to("cuda"))
                         with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                             output = tail.run_hooks(output)
                     tail.clear_data()
@@ -1571,6 +1581,8 @@ class TGN(nn.Module):
                         nodeData_unique, nodeData_inverse = torch.unique(nodeData, dim=0, return_inverse=True)
                         tail.dstdata['h'] = nfeat[:tail.num_dst()] + mem[:tail.num_dst()]
                         tail.srcdata['h'] = nfeat[tail.num_dst():] + mem[tail.num_dst():]
+                        node_dst_unique, node_dst_inverse = torch.unique(nodeData_inverse[:tail.num_dst()], return_inverse=True)
+                        node_src_unique, node_src_inverse = torch.unique(nodeData_inverse[tail.num_dst():], return_inverse=True)
                         edgeData_unique, edgeData_inverse = torch.unique(tail_efeat, dim=0, return_inverse=True)
                         time_d_unique, time_d_inverse = torch.unique(tail.time_deltas(), dim=0, return_inverse=True)
                         # tt.t_mem_update += tt.elapsed(t_start)
@@ -1587,7 +1599,12 @@ class TGN(nn.Module):
                         output = None
                         with nvtx.annotate("blk.apply", color="red"):
                             with nvtx.annotate("blk.apply fn", color="red"):
-                                output = self.attn0(tail, nodeData_unique, nodeData_inverse, edgeData_unique, edgeData_inverse, time_d_unique, time_d_inverse)
+                                # def forward(self, blk: TBlock, Q_node_idx, nodeData_dst, node_dst_inverse, nodeData_src, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
+                                x = torch.arange(tail.num_src()).to("cuda")
+                                node_dst_inverse = node_dst_inverse.to("cuda")
+                                b_dstindex = torch.tensor(tail._dstindex).to("cuda")
+                                Q_node_idx = node_dst_inverse[b_dstindex[x]]
+                                output = self.attn0(tail, Q_node_idx.to("cuda"), nodeData_unique[node_dst_unique], node_dst_inverse, nodeData_unique[node_src_unique], node_src_inverse, edgeData_unique, edgeData_inverse, time_d_unique, time_d_inverse)
                             with nvtx.annotate("blk.apply run_hooks", color="green"): # run hooks
                                 output = tail.run_hooks(output)
                         tail.clear_data()

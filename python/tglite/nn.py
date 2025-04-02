@@ -385,7 +385,6 @@ class TemporalAttnLayer(torch.nn.Module):
         return out
     
 
-
 class TemporalAttnLayer_2_perfCeil(torch.nn.Module):
     def __init__(self, ctx: TContext, num_heads: int,
                  dim_node: int, dim_edge: int, dim_time: int, dim_out: int,
@@ -489,6 +488,113 @@ class TemporalAttnLayer_2_perfCeil(torch.nn.Module):
                 out = torch.nn.functional.relu(self.dropout(out))
                 out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
         return out
+
+
+class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
+    def __init__(self, ctx: TContext, num_heads: int,
+                 dim_node: int, dim_edge: int, dim_time: int, dim_out: int,
+                 dropout=0.1):
+        super().__init__()
+        assert (dim_out % num_heads == 0)
+        self.ctx = ctx
+        self.num_heads = num_heads
+        self.dim_edge = dim_edge
+        self.dim_out = dim_out
+        self.dim_time = dim_time
+        self.time_encode = TimeEncode(dim_time)
+        # 拆分后前反向的性能开销 TODO
+        self.w_q_node = torch.nn.Linear(dim_node, dim_out)
+        self.w_q_time = torch.nn.Linear(dim_time, dim_out)
+        self.w_kv_node = torch.nn.Linear(dim_node, dim_out * 2)
+        self.w_kv_edge = torch.nn.Linear(dim_edge, dim_out * 2)
+        self.w_kv_time = torch.nn.Linear(dim_time, dim_out * 2)
+        self.w_out = torch.nn.Linear(dim_node + dim_out, dim_out)
+        self.attn_act = torch.nn.LeakyReLU(0.2)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.layer_norm = torch.nn.LayerNorm(dim_out)
+
+    @torch.compile
+    def fusion_precompute(self, layer, _unique_time_delta):
+        return precomputed_times(self.ctx, layer, self.time_encode, _unique_time_delta) # precompute是elementwise 理论上讲行不变
+
+    @torch.compile
+    def fusion_1(self, Q_node_idx, Q_node, Q_time, K_node, K_edge, K_time, Z_node_inverse, Z_edge_inverse, Z_time_inverse):
+        Q = torch.index_select(Q_node, 0, Q_node_idx) + Q_time.expand(len(Q_node_idx), -1)
+        K = torch.index_select(K_node, 0, Z_node_inverse) + torch.index_select(K_edge, 0, Z_edge_inverse) + torch.index_select(K_time, 0, Z_time_inverse)
+        Q = Q.reshape(Q.shape[0], self.num_heads, -1)
+        K = K.reshape(K.shape[0], self.num_heads, -1)
+        attn = torch.sum(Q * K, dim=2)
+        attn = self.attn_act(attn)
+        
+        return attn
+
+    # ! 先以压缩为核心写kernel，即相同的只存储一次
+    def forward(self, blk: TBlock, Q_node_idx, nodeData_dst, node_dst_inverse, nodeData_src, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
+        # TODO _g_dstindex 可以进一步预处理
+        with nvtx.annotate("Q_node", color="blue"):
+            Q_node = self.w_q_node(nodeData_dst) # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
+        # print(f"Q_node {Q_node.shape}") # Q_node torch.Size([7018, 100])
+        # print(f"Q_time {Q_time.shape}") # Q_time torch.Size([1, 100])
+
+        with nvtx.annotate("Q_time", color="blue"):
+            time_dst_unique = torch.ones([1, self.dim_time], dtype=torch.float, device="cuda") # 放弃更新bias
+            Q_time = self.w_q_time(time_dst_unique)
+
+
+        with nvtx.annotate("KV_node/edge/time", color="blue"):
+            Z_node = self.w_kv_node(nodeData_src)
+            Z_node_inverse = node_src_inverse
+            K_node = Z_node[:, :self.dim_out]
+            V_node = Z_node[:, self.dim_out:] # TODO 不一定要在这里把V算出来 显存换时间
+
+            Z_edge = self.w_kv_edge(efeat_unique)
+            Z_edge_inverse = efeat_inverse
+            K_edge = Z_edge[:, :self.dim_out]
+            V_edge = Z_edge[:, self.dim_out:]
+
+            time_unique = self.fusion_precompute(blk.layer, _unique_time_delta)
+            Z_time = self.w_kv_time(time_unique)
+            Z_time_inverse = time_inverse
+            K_time = Z_time[:, :self.dim_out]
+            V_time = Z_time[:, self.dim_out:]
+        # print(f"Z_node {Z_node.shape}") # Z_node torch.Size([1175, 200])
+        # print(f"Z_node_inverse {Z_node_inverse.shape} {max(Z_node_inverse)}") # torch.Size([90180]) 1174
+        # print(f"Z_edge {Z_edge.shape}") # Z_edge torch.Size([8168, 200])
+        # print(f"Z_time {Z_time.shape}") # Z_time torch.Size([62723, 200])
+
+
+        ### fusion1
+        # A,B,C,D,E
+        # Q_node, Q_time, K_node, K_edge, K_time
+        # attn(x, y) 
+        # K_node[Z_node_inverse[x], y*50:(y+1)*50] + K_edge[Z_edge_inverse[x], y*50:(y+1)*50] + K_time[Z_time_inverse[x], y*50:(y+1)*50] shape(50, 1)
+        # Q_node[node_dst_inverse[x], y*50:(y+1)*50] + Q_time[0, y*50:(y+1)*50] shape(50, 1)
+        # 一个thread_block shared_mem 164KB 并行度 41000*float 1*SM(持有的资源, sharedmem和thread)
+        with nvtx.annotate("fusion_1", color="blue"):
+            attn = self.fusion_1(Q_node_idx, Q_node, Q_time, K_node, K_edge, K_time, Z_node_inverse, Z_edge_inverse, Z_time_inverse)
+
+        with nvtx.annotate("edge_softmax", color="blue"):
+            attn = edge_softmax(blk, attn)  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            attn = self.dropout(attn)
+        # 这里怎么做edge_reduce 按位乘是一个element-wise的操作，reshape也并不影响，理论上有空间
+        # TODO fusion2
+        with nvtx.annotate("out and edge_reduce", color="blue"):
+            V = torch.index_select(V_node, 0, Z_node_inverse) + torch.index_select(V_edge, 0, Z_edge_inverse) + torch.index_select(V_time, 0, Z_time_inverse)
+            V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
+
+            out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+
+            out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):]
+        
+        with nvtx.annotate("else", color="blue"):
+            blk.dstdata['h'] = torch.index_select(nodeData_dst, 0, node_dst_inverse)
+            out = torch.cat([out, blk.dstdata['h']], dim=1)
+
+            out = self.w_out(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            out = torch.nn.functional.relu(self.dropout(out))
+            out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        return out
+
 
 class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
     def __init__(self, ctx: TContext, num_heads: int,

@@ -122,8 +122,11 @@ if __name__ == "__main__":
         _ets = [_et for _, _, _, _, _, _, _et in samples]
 
         new_samples = []
-        edge_load_percents = []
         node_load_percents = []
+        dstnodes_load_percents = []
+        srcnodes_load_percents = []
+        edge_load_percents = []
+        time_nbrs_load_percents = []
         # for b_i in range(len(_dstnodes)):
         for b_i in tqdm(range(len(_dstnodes)), desc="任务进度", unit="项"):
             # get batch blk items
@@ -135,11 +138,6 @@ if __name__ == "__main__":
             b_eids = torch.tensor(_eids[b_i]).to(device)
             b_ets = torch.tensor(_ets[b_i]).to(device)
 
-            print(f"b_dsttimes.shape {b_dsttimes.shape}")
-            print(f"b_dstnodes.shape {b_dstnodes.shape}")
-            print(f"b_dstindex.max {b_dstindex.max()}")
-            print(f"b_dstindex.shape {b_dstindex.shape}")
-            print(f"b_ets.shape {b_ets.shape}")
             b_dsttimes_scatter = b_dsttimes[b_dstindex]
             # dts - ets
             time_delta = b_dsttimes_scatter - b_ets
@@ -157,7 +155,12 @@ if __name__ == "__main__":
             _unique_eids, _reverse_eids = torch.unique(b_eids, return_inverse=True)
 
             all_nodes = torch.cat([b_dstnodes, b_srcnodes])
+            
             _unique_nids, _reverse_nids = torch.unique(all_nodes, return_inverse=True)
+            _unique_dst_nodes, _reverse_dst_nodes = torch.unique(_reverse_nids[:len(b_dstnodes)], return_inverse=True)
+            _unique_src_nodes, _reverse_src_nodes = torch.unique(_reverse_nids[len(b_dstnodes):], return_inverse=True)
+            x = torch.arange(len(b_srcnodes)).to("cuda")
+            Q_node_idx = _reverse_dst_nodes[b_dstindex[x]]
 
             _unique_ets, _reverse_ets = torch.unique(b_ets, return_inverse=True)
 
@@ -201,10 +204,24 @@ if __name__ == "__main__":
                 next_nodes = torch.unique(torch.cat([torch.tensor(_dstnodes[b_i + 1]).to(device), torch.tensor(_srcnodes[b_i + 1]).to(device)]))
                 _nids_nxt, _idx_nids_nxt = get_common_and_non_common_eids2(_unique_nids, next_nodes, device)
 
-            edge_load_percents.append((_unique_eids.shape[0] - _eids_pre.shape[0]) * 100 / _reverse_eids.shape[0])
-            node_load_percents.append((_unique_nids.shape[0] - _nids_pre.shape[0]) * 100 / _reverse_nids.shape[0])
+            edge_load_percents.append((_unique_eids.shape[0]) * 100 / _reverse_eids.shape[0])
+            node_load_percents.append((_unique_nids.shape[0]) * 100 / _reverse_nids.shape[0])
+            dstnodes_load_percents.append((_unique_dst_nodes.shape[0]) * 100 / _reverse_dst_nodes.shape[0])
+            srcnodes_load_percents.append((_unique_src_nodes.shape[0]) * 100 / _reverse_src_nodes.shape[0])
+            time_nbrs_load_percents.append((_unique_ets.shape[0]) * 100 / _reverse_ets.shape[0])
 
             '''
+            print(f"_unique_eids.shape {_unique_eids.shape[0]}")
+            print(f"_reverse_eids.shape {_reverse_eids.shape[0]}")
+            print(f"_unique_nids.shape {_unique_nids.shape[0]}")
+            print(f"_reverse_nids.shape {_reverse_nids.shape[0]}")
+            print(f"_unique_dst_nodes.shape {_unique_dst_nodes.shape[0]}")
+            print(f"_reverse_dst_nodes.shape {_reverse_dst_nodes.shape[0]}")
+            print(f"_unique_src_nodes.shape {_unique_src_nodes.shape[0]}")
+            print(f"_reverse_src_nodes.shape {_reverse_src_nodes.shape[0]}")
+            print(f"_unique_ets.shape {_unique_ets.shape[0]}")
+            print(f"_reverse_ets.shape {_reverse_ets.shape[0]}")
+
             print(f"b_inv_idx {len(b_inv_idx)}")
             print(f"b_dstnodes {len(b_dstnodes)}")
             print(f"b_dsttimes {len(b_dsttimes)}")
@@ -257,6 +274,7 @@ if __name__ == "__main__":
                 prev_eids, next_eids,
                 prev_nodes, next_nodes,
                 _unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets,
+                _unique_dst_nodes, _reverse_dst_nodes, _unique_src_nodes, _reverse_src_nodes, Q_node_idx, 
                 _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu,
                 _eids_nxt, _idx_eids_nxt,
                 _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu,
@@ -264,8 +282,12 @@ if __name__ == "__main__":
             )
             new_samples.append(new_sample)
 
-        print(f"edge_load_percent max {max(edge_load_percents):.2f}; min {min(edge_load_percents):.2f}; avg {sum(edge_load_percents) / len(edge_load_percents):.2f}")
-        print(f"node_load_percent max {max(node_load_percents):.2f}; min {min(node_load_percents):.2f}; avg {sum(node_load_percents) / len(node_load_percents):.2f}")
+        # motiv_wiki-talk_bs-6000: 对dstnodes, srcnodes, edges, time_nbrs的冗余度进行统计
+        print(f"dstnodes 冗余度 max {max(dstnodes_load_percents):.2f}; min {min(dstnodes_load_percents):.2f}; avg {sum(dstnodes_load_percents) / len(dstnodes_load_percents):.2f}")
+        print(f"srcnodes 冗余度 max {max(srcnodes_load_percents):.2f}; min {min(srcnodes_load_percents):.2f}; avg {sum(srcnodes_load_percents) / len(srcnodes_load_percents):.2f}")
+        print(f"edges 冗余度 max {max(edge_load_percents):.2f}; min {min(edge_load_percents):.2f}; avg {sum(edge_load_percents) / len(edge_load_percents):.2f}")
+        print(f"time_nbrs 冗余度 max {max(time_nbrs_load_percents):.2f}; min {min(time_nbrs_load_percents):.2f}; avg {sum(time_nbrs_load_percents) / len(time_nbrs_load_percents):.2f}")
+        print(f"node 冗余度 max {max(node_load_percents):.2f}; min {min(node_load_percents):.2f}; avg {sum(node_load_percents) / len(node_load_percents):.2f}")
 
         # 将 new_samples 中的张量移回 CPU 再保存
         new_samples_cpu = []

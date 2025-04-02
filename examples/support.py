@@ -376,6 +376,7 @@ class LinkPredTrainer(object):
                                         prev_eids, next_eids, \
                                         prev_nodes, next_nodes, \
                                         unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
+                                        _unique_dst_nodes, _reverse_dst_nodes, _unique_src_nodes, _reverse_src_nodes, \
                                         _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
                                         _eids_nxt, _idx_eids_nxt, \
                                         _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
