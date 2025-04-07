@@ -161,6 +161,7 @@ if __name__ == "__main__":
             _unique_src_nodes, _reverse_src_nodes = torch.unique(_reverse_nids[len(b_dstnodes):], return_inverse=True)
             x = torch.arange(len(b_srcnodes)).to("cuda")
             Q_node_idx = _reverse_dst_nodes[b_dstindex[x]]
+            reindex = torch.unique(b_dstindex, return_inverse=True)[1]
 
             _unique_ets, _reverse_ets = torch.unique(b_ets, return_inverse=True)
 
@@ -274,7 +275,8 @@ if __name__ == "__main__":
                 prev_eids, next_eids,
                 prev_nodes, next_nodes,
                 _unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets,
-                _unique_dst_nodes, _reverse_dst_nodes, _unique_src_nodes, _reverse_src_nodes, Q_node_idx, 
+                _unique_dst_nodes, _reverse_dst_nodes, _unique_src_nodes, _reverse_src_nodes,
+                Q_node_idx, reindex,
                 _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu,
                 _eids_nxt, _idx_eids_nxt,
                 _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu,

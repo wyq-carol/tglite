@@ -13,6 +13,7 @@ from ._frame import TFrame
 from ._stats import tt
 import nvtx
 from .gpu_mem_track import MemTracker
+import tglite.config
 
 class TBlock(object):
     """Captures 1-hop relations between node/time pairs and their neighbors for doing computations, such as segmented
@@ -214,16 +215,17 @@ class TBlock(object):
         self._edata = TFrame(len(eid))
         self._srcdata = TFrame(len(srcnodes))
 
-        calculate_unique_rows_ratio(srcnodes)
+        # calculate_unique_rows_ratio(srcnodes)
 
         # gpu_tracker = MemTracker()
-        if self._g.storage_device() != torch.device("cpu"):
-            # gpu_tracker.track()
-            self._g_allnodes = torch.from_numpy(np.concatenate([self._dstnodes, srcnodes])).long().to("cuda:0")
-            self._g_dstindex = torch.from_numpy(dstindex).long().to("cuda:0")
-            self._g_eid = torch.from_numpy(eid).long().to("cuda:0")
-            self._g_ets = torch.from_numpy(ets).float().to("cuda:0")
-            # gpu_tracker.track()
+        if tglite.config.TEST_BLKM != 1:
+            if self._g.storage_device() != torch.device("cpu"):
+                # gpu_tracker.track()
+                self._g_allnodes = torch.from_numpy(np.concatenate([self._dstnodes, srcnodes])).long().to("cuda:0")
+                self._g_dstindex = torch.from_numpy(dstindex).long().to("cuda:0")
+                self._g_eid = torch.from_numpy(eid).long().to("cuda:0")
+                self._g_ets = torch.from_numpy(ets).float().to("cuda:0")
+                # gpu_tracker.track()
 
     def clear_nbrs(self):
         """Clears the neighbor attributes and related cache."""

@@ -306,7 +306,8 @@ class LinkPredTrainer(object):
 
                         self.optimizer.zero_grad()
 
-                        if tglite.config.PERF_CEIL_BASE: # TODO only TGN
+                        # ! pre-sampling logic
+                        if tglite.config.PERF_CEIL_BASE: # TODO only TGN 
                             if batch._b_id == 0:
                                 self.model._load_new_perfCeilBase(batch) # 在函数内还是改的next
                             else: 
@@ -377,6 +378,7 @@ class LinkPredTrainer(object):
                                         prev_nodes, next_nodes, \
                                         unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
                                         _unique_dst_nodes, _reverse_dst_nodes, _unique_src_nodes, _reverse_src_nodes, \
+                                        Q_node_idx, reindex, \
                                         _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
                                         _eids_nxt, _idx_eids_nxt, \
                                         _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \

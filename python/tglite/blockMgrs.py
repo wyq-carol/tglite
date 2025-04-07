@@ -249,7 +249,8 @@ class BlockManager:
         """ waring : get !copied! data of indices """
         # start = time.time()
         indices = self.index2blk[indices] * self.num_slots + self.index2managerSlot[indices]
-        data_views = self.pool.memory.reshape(-1, self.feature_size)[indices]
+        data_views = self.pool.memory.reshape(-1, self.feature_size)[indices].contiguous()
+        # assert data_views.untyped_storage().data_ptr()== self.pool.memory.untyped_storage().data_ptr()
         # print(f"[TIME] get_data_batch time: {time.time() - start}s")
         return data_views
 
