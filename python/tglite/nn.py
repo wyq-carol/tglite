@@ -80,7 +80,7 @@ class TimeEncode(torch.nn.Module):
             # ans = torch.cos(self.w(is_zero_tensor, ts.unsqueeze(-1)))
             # WYQ_TODO fusion
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-            tmp = self.w(is_zero_tensor, ts)
+            tmp = self.w(is_zero_tensor, ts) # TODO ts
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             ans = torch.cos(tmp)
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
@@ -494,7 +494,7 @@ class TemporalAttnLayer_2_perfCeil(torch.nn.Module):
 
 class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
     def __init__(self, ctx: TContext, num_heads: int,
-                 dim_node: int, dim_edge: int, dim_time: int, dim_out: int,
+                 dim_node: int, dim_edge: int, dim_time: int, dim_out: int, layer: int,
                  dropout=0.1):
         super().__init__()
         assert (dim_out % num_heads == 0)
@@ -516,6 +516,7 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         self.attn_act = torch.nn.LeakyReLU(0.2)
         self.dropout = torch.nn.Dropout(dropout)
         self.layer_norm = torch.nn.LayerNorm(dim_out)
+        self.layer = layer
 
     @torch.compile
     def fusion_precompute(self, layer, _unique_time_delta):
@@ -531,8 +532,8 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         attn = self.attn_act(attn)
         return attn
     
-    def fusion_2(self, blk, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx):
-        out = FusedTGNFunction.apply(blk.num_dst(), attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
+    def fusion_2(self, num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx):
+        out = FusedTGNFunction.apply(num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
         return out
     
     @torch.compile
@@ -545,7 +546,7 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         return out
 
     # ! 先以压缩为核心写kernel，即相同的只存储一次
-    def forward(self, blk: TBlock, reduce_idx, reindex, Q_node_idx, nodeData_dst, node_dst_inverse, nodeData_src, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
+    def forward(self, num_src, num_dst, reduce_idx, reindex, Q_node_idx, nodeData_dst, node_dst_inverse, nodeData_src, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
         # TODO _g_dstindex 可以进一步预处理
         with nvtx.annotate("Q_node", color="blue"):
             Q_node = self.w_q_node(nodeData_dst) # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
@@ -568,7 +569,7 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
             K_edge = Z_edge[:, :self.dim_out]
             V_edge = Z_edge[:, self.dim_out:]
 
-            time_unique = self.fusion_precompute(blk.layer, _unique_time_delta)
+            time_unique = self.fusion_precompute(self.layer, _unique_time_delta)
             Z_time = self.w_kv_time(time_unique)
             Z_time_inverse = time_inverse
             K_time = Z_time[:, :self.dim_out]
@@ -593,11 +594,11 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         ### fusion2
         # forward(self, num_src, reindex, m, attn, unique_node, unique_node_idx, unique_edge, unique_edge_idx, unique_time, unique_time_idx, reduce_idx) -> Tensor:
         with nvtx.annotate("fusion_2", color="blue"):
-            attn = torch_scatter.scatter_softmax(attn, reindex, dim=0, dim_size=blk.num_src())
+            attn = torch_scatter.scatter_softmax(attn, reindex, dim=0, dim_size=num_src)
             Z_node_inverse = Z_node_inverse.int()
             Z_edge_inverse = Z_edge_inverse.int()
             Z_time_inverse = Z_time_inverse.int()
-            out = FusedTGNFunction.apply(blk.num_dst(), attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
+            out = FusedTGNFunction.apply(num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
         ## fusion2 消融
         # with nvtx.annotate("edge_softmax", color="blue"):
         #     attn = edge_softmax(blk, attn)  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):

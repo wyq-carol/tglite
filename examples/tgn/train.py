@@ -114,10 +114,10 @@ if __name__ == "__main__":
 
     if tglite.config.TEST_BLKM:
         # TODO A100 40G 目前只支持efeat_dim = 172
-        shared_pool = BlockPool(total_mem_gb=20, block_elements=4300)
+        shared_pool = BlockPool(total_mem_gb=5.5, block_elements=4300)
     
-        manager_nfeat = BlockManager(shared_pool, feature_size=100, max_manager_index=g.num_nodes())  # 4096/256=16 slots/block
-        manager_efeat = BlockManager(shared_pool, feature_size=172, max_manager_index=g.num_edges())  # 4096/128=32 slots/block
+        manager_nfeat = BlockManager(shared_pool, feature_size=100, max_manager_index=g.num_nodes())
+        manager_efeat = BlockManager(shared_pool, feature_size=172, max_manager_index=g.num_edges())
 
 
     ### load data
@@ -160,7 +160,11 @@ if __name__ == "__main__":
         g.set_compute(device)
 
         g.mailbox = tg.Mailbox(g.num_nodes(), 1, 2 * DIM_EMBED + dim_efeat) # mailbox, mem on cpu
+        # import pdb;pdb.set_trace()
         g.mem = tg.Memory(g.num_nodes(), DIM_EMBED)
+        if args.move:
+            g._mem.move_to(device)
+            g._mailbox.move_to(device)
 
     elif tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu
@@ -275,8 +279,8 @@ if __name__ == "__main__":
         num_heads=N_HEADS,
         dropout=DROPOUT)
     model = model.to(device)
-    if tglite.config.TEST_BLKM:
-        model._load_new_samples_blkm() # 显存占用很小 & all ready on GPU
+    # if tglite.config.TEST_BLKM:
+    #     model._load_new_samples_blkm() # 显存占用很小 & all ready on GPU
     if tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         model._load_new_samples2()
     if tglite.config.OFFLINE_SAMPLE:

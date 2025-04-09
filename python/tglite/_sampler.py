@@ -1,6 +1,7 @@
 from . import _c
 from ._core import TError
 from ._block import TBlock
+from ._graph import TGraph
 from ._utils import get_num_cpus
 from ._stats import tt
 
@@ -46,3 +47,15 @@ class TSampler(object):
                 block.copy_ets())
         tt.t_sample += tt.elapsed(t_start)
         return blk
+    
+    def sample_no_blk(self, g: TGraph, dstnodes, dsttimes) -> TBlock:
+        """Updates block with sampled 1-hop source neighbors
+        
+        :returns: updated block
+        """
+        # TODO 我记得sample 好像有些性能问题 如果是在CPU上采样我的数据就总是在CPU上
+        t_start = tt.start()
+        block = self._sampler.sample(g._get_tcsr(), dstnodes, dsttimes)
+        tt.t_sample += tt.elapsed(t_start)
+        #  dstindex, srcnodes, eid, ets
+        return block.copy_dstindex(), block.copy_srcnodes(), block.copy_eid(), block.copy_ets()

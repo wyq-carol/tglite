@@ -27,6 +27,7 @@ class TBatch(object):
         self._g = g
         self._beg_idx = range[0]
         self._end_idx = range[1]
+        self._nxt_idx = None
         self._neg_nodes = None
         self._b_id = b_id
 

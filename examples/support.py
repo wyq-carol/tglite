@@ -243,6 +243,9 @@ class LinkPredTrainer(object):
 
             self.ctx.train()
             self.model.train()
+            self.model.sampling_thread = None
+            self.model.curr_data = None
+            self.model.next_data = None
             if self.g.mem is not None:
                 self.g.mem.reset() # TODO 存储需要处理mem mailbox reset
             if self.g.mailbox is not None:
@@ -257,15 +260,10 @@ class LinkPredTrainer(object):
             try:
                 batch = next(edge_iter)
                 batch.neg_nodes = self.neg_sampler(len(batch))
+
                 while True:
                     with nvtx.annotate(f"Batch {batch._b_id}", color="green"):
                         # print(f"Batch {batch._b_id} - len(batch) {len(batch)}")
-                        if batch._b_id == 0:
-                            if tglite.config.PERF_CEIL: # TODO only TGN
-                                self.model._init_samples0_2_perfCeil()
-                            elif tglite.config.TEST_BLKM:
-                                self.model._init_samples0_TEST_BLKM()
-                        
                         try:
                             # import pdb;pdb.set_trace()
                             next_batch = next(edge_iter)
@@ -274,6 +272,13 @@ class LinkPredTrainer(object):
                         except StopIteration:
                             print("[epoch end]")
                             break
+
+                        batch._nxt_idx = next_batch._end_idx
+                        if batch._b_id == 0:
+                            if tglite.config.PERF_CEIL: # TODO only TGN
+                                self.model._init_samples0_2_perfCeil()
+                            elif tglite.config.TEST_BLKM: # ! TODO 
+                                self.model._init_samples0_online_TEST_BLKM(batch)
 
                         # test with nsys WYQ TODO
                         # if (True and tglite.config.ON_HETER): # TODO
@@ -344,7 +349,7 @@ class LinkPredTrainer(object):
                                 self.ctx.perfCeilBase_thread = threading.Thread(target=perfCeilBase_preloading, args=(self, next_batch))
                                 self.ctx.perfCeilBase_thread.start()
                     
-                        self.model.is_train = True
+                        # self.model.is_train = Trues
                         pred_pos, pred_neg = self.model(batch)
                         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                         tt.t_forward += tt.elapsed(t_start)
@@ -365,24 +370,6 @@ class LinkPredTrainer(object):
                             epoch_loss += float(loss)
                         with nvtx.annotate("TRAIN-backward-optimizer", color="green"):
                             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
-
-                            if tglite.config.TEST_BLKM: # TODO only TGN
-                                if self.model.sampling_thread is not None:
-                                    self.model.sampling_thread.join()
-                                    assert self.model.curr_data == None # 表示第一轮预采样/后来next batch 采样的结果已经被使用了
-                                    self.model.curr_data = self.model.next_data
-                                    self.model.next_data = None # 指示当前batch 可以开始下一轮预采样了
-                                    if self.model.curr_data is not None: # 如果还有下一个batch
-                                        _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, _unique_time_delta, _reverse_time_delta, \
-                                        prev_eids, next_eids, \
-                                        prev_nodes, next_nodes, \
-                                        unique_eids, _reverse_eids, _unique_nids, _reverse_nids, _unique_ets, _reverse_ets, \
-                                        _unique_dst_nodes, _reverse_dst_nodes, _unique_src_nodes, _reverse_src_nodes, \
-                                        Q_node_idx, reindex, \
-                                        _eids_pre, _idx_eids_pre, _eids_cpu, _idx_eids_cpu, \
-                                        _eids_nxt, _idx_eids_nxt, \
-                                        _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
-                                        _nids_nxt, _idx_nids_nxt = self.model.curr_data
                             
                             if tglite.config.PERF_CEIL: # TODO only TGN
                                 def preloading(self, _nids_cpu, _eids_cpu):
@@ -453,6 +440,7 @@ class LinkPredTrainer(object):
         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         print('best model at epoch {}'.format(best_epoch))
 
+    '''
     @torch.no_grad()
     def eval(self, start_idx: int, end_idx: int = None):
         print("[eval start]")
@@ -462,8 +450,10 @@ class LinkPredTrainer(object):
         val_auc = []
         for batch in tg.iter_edges(self.g, size=self.bsize, start=start_idx, end=end_idx):
             size = len(batch)
+            print(f"size {size} begin_idx {batch._beg_idx} end_idx {batch._end_idx}")
             batch.neg_nodes = self.neg_sampler(size)
-            self.model.is_train = False
+            # self.model.is_train = False
+            import pdb;pdb.set_trace()
             prob_pos, prob_neg = self.model(batch)
             prob_pos = prob_pos.cpu()
             prob_neg = prob_neg.cpu()
@@ -473,6 +463,73 @@ class LinkPredTrainer(object):
             val_auc.append(roc_auc_score(true_label, pred_score))
         print("[eval end]")
         return np.mean(val_aps), np.mean(val_auc)
+    '''
+    
+    @torch.no_grad()
+    def eval(self, start_idx: int, end_idx: int = None):
+        # print("[eval start]")
+        # self.ctx.eval()
+        # self.model.eval()
+        # val_aps = []
+        # val_auc = []
+        # for batch in tg.iter_edges(self.g, size=self.bsize, start=start_idx, end=end_idx):
+        #     size = len(batch)
+        #     print(f"size {size} begin_idx {batch._beg_idx} end_idx {batch._end_idx}")
+        #     batch.neg_nodes = self.neg_sampler(size)
+        #     prob_pos, prob_neg = self.model(batch)
+        #     prob_pos = prob_pos.cpu()
+        #     prob_neg = prob_neg.cpu()
+        #     pred_score = torch.cat([prob_pos, prob_neg], dim=0).sigmoid()
+        #     true_label = torch.cat([torch.ones(size), torch.zeros(size)])
+        #     val_aps.append(average_precision_score(true_label, pred_score))
+        #     val_auc.append(roc_auc_score(true_label, pred_score))
+        # print("[eval end]")
+        # # return np.mean(val_aps), np.mean(val_auc)
+    
+        print("[eval start]")
+        self.ctx.eval()
+        self.model.eval()
+        self.model.sampling_thread = None
+        self.model.curr_data = None
+        self.model.next_data = None
+        val_aps = []
+        val_auc = []
+        edge_iter = tg.iter_edges(self.g, size=self.bsize, start=start_idx, end=end_idx)
+        try:
+            batch = next(edge_iter)
+            batch.neg_nodes = self.neg_sampler(len(batch))
+
+            while True:
+                with nvtx.annotate(f"Eval-Batch {batch._b_id}", color="green"):
+                    try:
+                        next_batch = next(edge_iter)
+                        next_batch.neg_nodes = self.neg_sampler(len(next_batch)) # 这里要用next batch 才是三倍
+
+                    except StopIteration:
+                        print("[eval end]")
+                        break
+
+                    batch._nxt_idx = next_batch._end_idx
+                    if batch._b_id == 0:
+                        if tglite.config.TEST_BLKM:
+                            self.model._init_samples0_online_TEST_BLKM(batch)
+
+                    prob_pos, prob_neg = self.model(batch)
+                    prob_pos = prob_pos.cpu()
+                    prob_neg = prob_neg.cpu()
+                    pred_score = torch.cat([prob_pos, prob_neg], dim=0).sigmoid()
+                    true_label = torch.cat([torch.ones_like(prob_pos), torch.zeros_like(prob_neg)])
+                    val_aps.append(average_precision_score(true_label, pred_score))
+                    val_auc.append(roc_auc_score(true_label, pred_score))
+                    # pred_score = torch.cat([pred_pos, pred_neg], dim=0).sigmoid()
+                    # true_label = torch.cat([torch.ones_like(pred_pos), torch.zeros_like(pred_neg)], dim=0)
+                    # val_aps.append(average_precision_score(true_label, pred_score))
+                    # val_auc.append(roc_auc_score(true_label, pred_score))
+                    batch = next_batch
+        except StopIteration:
+            pass
+        return np.mean(val_aps), np.mean(val_auc)
+
 
     def test(self):
         print('loading saved checkpoint and testing model...')

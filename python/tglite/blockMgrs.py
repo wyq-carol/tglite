@@ -116,9 +116,9 @@ class BlockManager:
         self.feature_size = feature_size
         self.blocks: List[Block] = []
         self.free_blocks = deque()
-        self.index2managerBlk:  torch.Tensor = torch.ones(max_manager_index, dtype=torch.int32) * -1
-        self.index2managerSlot: torch.Tensor = torch.ones(max_manager_index, dtype=torch.int32) * -1
-        self.index2blk: torch.Tensor = torch.ones(max_manager_index, dtype=torch.int32) * -1
+        self.index2managerBlk:  torch.Tensor = torch.ones(max_manager_index, dtype=torch.int32, device="cuda") * -1
+        self.index2managerSlot: torch.Tensor = torch.ones(max_manager_index, dtype=torch.int32, device="cuda") * -1
+        self.index2blk: torch.Tensor = torch.ones(max_manager_index, dtype=torch.int32, device="cuda") * -1
 
     def init(self, indices: torch.Tensor, cpu_tensor: torch.Tensor):
         ### allocate(self, indices: torch.Tensor): # indices: 预分配的nid/eid
@@ -152,13 +152,13 @@ class BlockManager:
         # 1000 = num_blocks(62) * num_slots(16) + last_block_slots(8)
         # 维护索引
         if last_block_slots == 0:
-            self.index2blk[indices] = torch.tensor(blocks_ids, dtype=torch.int32).repeat_interleave(num_slots)
-            self.index2managerBlk[indices] = torch.arange(num_blocks, dtype=torch.int32).repeat_interleave(num_slots)
-            self.index2managerSlot[indices] = torch.arange(num_slots, dtype=torch.int32).repeat(num_blocks)
+            self.index2blk[indices] = torch.tensor(blocks_ids, dtype=torch.int32, device="cuda").repeat_interleave(num_slots)
+            self.index2managerBlk[indices] = torch.arange(num_blocks, dtype=torch.int32, device="cuda").repeat_interleave(num_slots)
+            self.index2managerSlot[indices] = torch.arange(num_slots, dtype=torch.int32, device="cuda").repeat(num_blocks)
         else: # if last_block_slots > 0
-            self.index2blk[indices] = torch.cat((torch.tensor(blocks_ids[:-1], dtype=torch.int32).repeat_interleave(num_slots), torch.tensor(blocks_ids[-1], dtype=torch.int32).repeat(last_block_slots)))
-            self.index2managerBlk[indices] = torch.cat((torch.arange(num_blocks, dtype=torch.int32).repeat_interleave(num_slots), torch.tensor(num_blocks, dtype=torch.int32).repeat(last_block_slots)))
-            self.index2managerSlot[indices] = torch.cat((torch.arange(num_slots, dtype=torch.int32).repeat(num_blocks), torch.arange(last_block_slots, dtype=torch.int32)))
+            self.index2blk[indices] = torch.cat((torch.tensor(blocks_ids[:-1], dtype=torch.int32, device="cuda").repeat_interleave(num_slots), torch.tensor(blocks_ids[-1], dtype=torch.int32, device="cuda").repeat(last_block_slots)))
+            self.index2managerBlk[indices] = torch.cat((torch.arange(num_blocks, dtype=torch.int32, device="cuda").repeat_interleave(num_slots), torch.tensor(num_blocks, dtype=torch.int32, device="cuda").repeat(last_block_slots)))
+            self.index2managerSlot[indices] = torch.cat((torch.arange(num_slots, dtype=torch.int32, device="cuda").repeat(num_blocks), torch.arange(last_block_slots, dtype=torch.int32, device="cuda")))
             self.free_blocks.append(blocks_ids[-1])
 
         ### copy_from_cpu_batch(self, indices: torch.Tensor, cpu_tensor: torch.Tensor): # 主动写入
@@ -249,7 +249,7 @@ class BlockManager:
         """ waring : get !copied! data of indices """
         # start = time.time()
         indices = self.index2blk[indices] * self.num_slots + self.index2managerSlot[indices]
-        data_views = self.pool.memory.reshape(-1, self.feature_size)[indices].contiguous()
+        data_views = self.pool.memory.reshape(-1, self.feature_size)[indices]
         # assert data_views.untyped_storage().data_ptr()== self.pool.memory.untyped_storage().data_ptr()
         # print(f"[TIME] get_data_batch time: {time.time() - start}s")
         return data_views
