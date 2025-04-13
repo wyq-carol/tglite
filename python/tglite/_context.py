@@ -21,6 +21,7 @@ class TContext(object):
         self._z = None
         self.manager_nfeat = None
         self.manager_efeat = None
+        self.manager_mem_mail = None
 
         self._g = g
         self._training = True
@@ -141,6 +142,9 @@ class TContext(object):
 
     def set_blkm_efeat(self, manager_efeat):
         self.manager_efeat = manager_efeat
+
+    def set_blkm_mem_mail_feat(self, manager_mem_mail):
+        self.manager_mem_mail = manager_mem_mail
 
     def _get_efeat_pin(self, layer: int, rows: int, dim: int) -> Tensor:
         return self._get_pin(self._efeat_pins, layer, rows, [dim])

@@ -190,18 +190,62 @@ class EdgePredictor(nn.Module):
         self.act = nn.ReLU()
 
     def forward(self, src: Tensor, dst: Tensor) -> Tensor:
-        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         h_src = self.src_fc(src)
         # torch.cuda.empty_cache() # empty cache开销很大(会长60s+)
-        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         h_dst = self.dst_fc(dst)
         # torch.cuda.empty_cache() # 这里的写法对显存释放很不友好
-        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         h_out = self.act(h_src + h_dst)
-        # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         ans = self.out_fc(h_out)
         return ans
+    
+import torch
+import torch.nn as nn
+import torch.autograd as autograd
 
+# 自定义 Linear 层的前向和反向传播
+class CustomLinearFunction(autograd.Function):
+    @staticmethod
+    def forward(ctx, input, weight, bias=None):
+        with nvtx.annotate("custom-linear-fwd", color="blue"):
+            # 保存输入和权重，用于反向传播
+            ctx.save_for_backward(input, weight, bias)
+            # 计算前向传播结果
+            output = input @ weight.t()
+            if bias is not None:
+                output += bias
+            return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        with nvtx.annotate("custom-linear-bwd", color="blue"):
+            # 获取保存的输入和权重
+            input, weight, bias = ctx.saved_tensors
+            # 计算输入的梯度
+            grad_input = grad_output @ weight
+            # 计算权重的梯度
+            grad_weight = grad_output.t() @ input
+            # 计算偏置的梯度（如果有偏置）
+            grad_bias = grad_output.sum(dim=0) if bias is not None else None
+            return grad_input, grad_weight, grad_bias
+
+# 自定义 Linear 层
+class CustomLinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super(CustomLinear, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
+        if bias:
+            self.bias = nn.Parameter(torch.randn(out_features))
+        else:
+            self.register_parameter('bias', None)
+
+    def forward(self, input):
+        return CustomLinearFunction.apply(input, self.weight, self.bias)
+# 为自定义函数添加名字
+CustomLinearFunction.__name__ = "CustomLinearFunction"
+CustomLinearFunction.forward.__name__ = "CustomLinearFunction_forward"
+CustomLinearFunction.backward.__name__ = "CustomLinearFunction_backward"
 
 class LinkPredTrainer(object):
     def __init__(self, ctx: tg.TContext, model: nn.Module,
@@ -233,6 +277,11 @@ class LinkPredTrainer(object):
         for e in range(self.epochs + warmup_epochs):
             print(f'epoch {e}:')
 
+            # if e > 0: # ! mailbox TODO
+            #     get_mailbox_upd_batchs(tglite.config.log_dir, tglite.config.log_name)
+            #     get_mailbox_upd_batchs_eval(tglite.config.log_dir, tglite.config.log_name)
+            #     exit()
+
             if e == 1 + warmup_epochs:
                 print("[TEST] torch.cuda.nvtx.range_push")
                 cuda.start_profiler()
@@ -243,13 +292,20 @@ class LinkPredTrainer(object):
 
             self.ctx.train()
             self.model.train()
+            self.model.is_train = True
+            self.model._mailboxUpd_samples = None
+            if tglite.config.TEST_BLKM:
+                self.model._load_mailboxUpd_samples_blkm()
             self.model.sampling_thread = None
             self.model.curr_data = None
             self.model.next_data = None
-            if self.g.mem is not None:
-                self.g.mem.reset() # TODO 存储需要处理mem mailbox reset
-            if self.g.mailbox is not None:
-                self.g.mailbox.reset()
+            if tglite.config.TEST_BLKM:
+                self.ctx.manager_mem_mail.reset()
+            # else:
+                if self.g.mem is not None:
+                    self.g.mem.reset() # TODO 存储需要处理mem mailbox reset
+                if self.g.mailbox is not None:
+                    self.g.mailbox.reset()
 
             epoch_loss = 0.0
             t_loop = tt.start()
@@ -259,7 +315,7 @@ class LinkPredTrainer(object):
             edge_iter = tg.iter_edges(self.g, size=self.bsize, end=self.train_end)
             try:
                 batch = next(edge_iter)
-                batch.neg_nodes = self.neg_sampler(len(batch))
+                batch._neg_nodes = self.neg_sampler(len(batch))
 
                 while True:
                     with nvtx.annotate(f"Batch {batch._b_id}", color="green"):
@@ -267,13 +323,18 @@ class LinkPredTrainer(object):
                         try:
                             # import pdb;pdb.set_trace()
                             next_batch = next(edge_iter)
-                            next_batch.neg_nodes = self.neg_sampler(len(next_batch)) # 这里要用next batch 才是三倍
+                            next_batch._neg_nodes = self.neg_sampler(len(next_batch)) # 这里要用next batch 才是三倍
+                            batch._nxt_idx = next_batch._end_idx
+                            batch._nxt_neg_nodes = self.neg_sampler(len(next_batch))
 
                         except StopIteration:
-                            print("[epoch end]")
-                            break
+                            # print("[epoch end]")
+                            # break
+                            next_batch = None
+                            batch._nxt_idx = None
+                            batch._nxt_neg_nodes = batch._neg_nodes
 
-                        batch._nxt_idx = next_batch._end_idx
+
                         if batch._b_id == 0:
                             if tglite.config.PERF_CEIL: # TODO only TGN
                                 self.model._init_samples0_2_perfCeil()
@@ -349,7 +410,6 @@ class LinkPredTrainer(object):
                                 self.ctx.perfCeilBase_thread = threading.Thread(target=perfCeilBase_preloading, args=(self, next_batch))
                                 self.ctx.perfCeilBase_thread.start()
                     
-                        # self.model.is_train = Trues
                         pred_pos, pred_neg = self.model(batch)
                         # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
                         tt.t_forward += tt.elapsed(t_start)
@@ -411,11 +471,14 @@ class LinkPredTrainer(object):
                             self.optimizer.step()
                             tt.t_backward += tt.elapsed(t_start)
                             # 更新下一轮batch
+                            if next_batch is None:
+                                break
                             batch = next_batch
                         # print(f"cur-batch memory {torch.cuda.memory_allocated()/(2**20)}")
                         # print(f"max-batch memory {torch.cuda.max_memory_allocated()/(2**20)}")
             except StopIteration:
-                pass
+                print("[epoch end]")
+                
             tt.t_loop = tt.elapsed(t_loop)
 
             with nvtx.annotate("TRAIN-eval", color="green"):
@@ -489,6 +552,10 @@ class LinkPredTrainer(object):
         print("[eval start]")
         self.ctx.eval()
         self.model.eval()
+        self.model.is_train = False
+        self.model._mailboxUpd_samples = None
+        if tglite.config.TEST_BLKM:
+            self.model._load_mailboxUpd_samples_blkm()
         self.model.sampling_thread = None
         self.model.curr_data = None
         self.model.next_data = None
@@ -504,12 +571,16 @@ class LinkPredTrainer(object):
                     try:
                         next_batch = next(edge_iter)
                         next_batch.neg_nodes = self.neg_sampler(len(next_batch)) # 这里要用next batch 才是三倍
+                        batch._nxt_idx = next_batch._end_idx
+                        batch._nxt_neg_nodes = self.neg_sampler(len(next_batch))
 
                     except StopIteration:
-                        print("[eval end]")
-                        break
+                        # print("[eval end]")
+                        # break
+                        next_batch = None
+                        batch._nxt_idx = None
+                        batch._nxt_neg_nodes = batch._neg_nodes
 
-                    batch._nxt_idx = next_batch._end_idx
                     if batch._b_id == 0:
                         if tglite.config.TEST_BLKM:
                             self.model._init_samples0_online_TEST_BLKM(batch)
@@ -525,9 +596,11 @@ class LinkPredTrainer(object):
                     # true_label = torch.cat([torch.ones_like(pred_pos), torch.zeros_like(pred_neg)], dim=0)
                     # val_aps.append(average_precision_score(true_label, pred_score))
                     # val_auc.append(roc_auc_score(true_label, pred_score))
+                    if next_batch is None:
+                        break
                     batch = next_batch
         except StopIteration:
-            pass
+            print("[eval end]")
         return np.mean(val_aps), np.mean(val_auc)
 
 

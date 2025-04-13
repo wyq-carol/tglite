@@ -9,7 +9,8 @@ from tgn import TGN
 import nvtx
 from tglite.gpu_mem_track import *
 import tglite.config
-from tglite.blockMgrs import *
+from tglite.blockMgrsv4 import *
+# from tglite.blockMgrs import *
 import pandas as pd
 from pathlib import Path
 ### arguments
@@ -114,10 +115,10 @@ if __name__ == "__main__":
 
     if tglite.config.TEST_BLKM:
         # TODO A100 40G 目前只支持efeat_dim = 172
-        shared_pool = BlockPool(total_mem_gb=5.5, block_elements=4300)
+        shared_pool = BlockPool(total_mem_gb=30, block_elements=4300)
     
-        manager_nfeat = BlockManager(shared_pool, feature_size=100, max_manager_index=g.num_nodes())
-        manager_efeat = BlockManager(shared_pool, feature_size=172, max_manager_index=g.num_edges())
+        # manager_nfeat = BlockManager(shared_pool, feature_size=100, max_manager_index=g.num_nodes())
+        # manager_efeat = BlockManager(shared_pool, feature_size=172, max_manager_index=g.num_edges())
 
 
     ### load data
@@ -153,8 +154,15 @@ if __name__ == "__main__":
         g.dim_edge = dim_efeat
         g.dim_node = dim_nfeat
 
-        manager_nfeat.init(torch.arange(g.num_nodes()), node_feats)
-        manager_efeat.init(torch.arange(g.num_edges()), edge_feats)
+        import math
+        # TODO A100 40G 目前只支持efeat_dim = 172
+        manager_nfeat = BlockManager(shared_pool, node_feats, feature_size=100, max_idx=g.num_nodes(), init_blocks=math.ceil(g.num_nodes()/(4300/100)))
+        manager_nfeat.copy_from_cpu_batch(indices=torch.arange(g.num_nodes(), dtype=torch.int32, device='cuda'))
+        manager_efeat = BlockManager(shared_pool, edge_feats, feature_size=172, max_idx=g.num_edges(), init_blocks=math.ceil(g.num_edges()/(4300/172)))
+        manager_efeat.copy_from_cpu_batch(indices=torch.arange(g.num_edges(), dtype=torch.int32, device='cuda'))
+
+        # manager_nfeat.init(torch.arange(g.num_nodes()), node_feats)
+        # manager_efeat.init(torch.arange(g.num_edges()), edge_feats)
 
 
         g.set_compute(device)
@@ -165,6 +173,8 @@ if __name__ == "__main__":
         if args.move:
             g._mem.move_to(device)
             g._mailbox.move_to(device)
+
+        manager_mem_mail = MemMailManager(shared_pool, DIM_EMBED, g.num_nodes(), manager_efeat, math.ceil(g.num_nodes()/(4300/100)), g.num_nodes())
 
     elif tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu
@@ -263,6 +273,7 @@ if __name__ == "__main__":
     if tglite.config.TEST_BLKM:
         ctx.set_blkm_nfeat(manager_nfeat)
         ctx.set_blkm_efeat(manager_efeat)
+        ctx.set_blkm_mem_mail_feat(manager_mem_mail)
 
 
     ### model

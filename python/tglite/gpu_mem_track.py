@@ -19,6 +19,25 @@ node_count = {}
 # samples for coding
 samples = []
 
+# mailbox preload
+mailbox_upd_batchs = []
+mailbox_upd_batchs_eval = []
+def add_mailbox_upd_batch(item):
+    mailbox_upd_batchs.append(item)
+
+def add_mailbox_upd_batch_eval(item):
+    mailbox_upd_batchs_eval.append(item)
+
+def get_mailbox_upd_batchs(log_dir, log_name):
+    file_path = os.path.join(log_dir, f"TRAIN_mailboxUpdBatchs_{log_name}.pt")
+    print(f"len(mailbox_upd_batchs) {len(mailbox_upd_batchs)}")
+    torch.save(mailbox_upd_batchs, file_path)
+
+def get_mailbox_upd_batchs_eval(log_dir, log_name):
+    file_path = os.path.join(log_dir, f"EVAL_mailboxUpdBatchs_{log_name}.pt")
+    print(f"len(mailbox_upd_batchs_eval) {len(mailbox_upd_batchs_eval)}")
+    torch.save(mailbox_upd_batchs_eval, file_path)
+
 def add_samples(item):
     samples.append(item)
     # print(f"show {len(samples[0][0])}")

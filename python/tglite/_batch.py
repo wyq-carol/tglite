@@ -29,6 +29,7 @@ class TBatch(object):
         self._end_idx = range[1]
         self._nxt_idx = None
         self._neg_nodes = None
+        self._nxt_neg_nodes = None
         self._b_id = b_id
 
     def __len__(self) -> int:

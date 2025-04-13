@@ -58,14 +58,15 @@ class Mailbox(object):
             self._time[nids, pos] = mail_ts
             self._next[nids] = torch.remainder(pos + 1, self._size)
 
-        if bid != None:
-            # uniq
-            self._mail_uniq_bids[uniq] = bid
-            # nbrs
-            # 取第1列
-            self._mail_nbrs_bids[uniq, :1] = nbrs.unsqueeze(1)
-            # 取第2列
-            self._mail_nbrs_bids[uniq, 1:] = bid
+        # if bid != None:
+        #     # uniq
+        #     self._mail_uniq_bids[uniq] = bid
+        #     # nbrs
+        #     # 取第1列
+        #     import pdb;pdb.set_trace()
+        #     self._mail_nbrs_bids[uniq, :1] = nbrs.unsqueeze(1)
+        #     # 取第2列
+        #     self._mail_nbrs_bids[uniq, 1:] = bid
 
     def move_to(self, device, **kwargs):
         if device is None or self._device == device:

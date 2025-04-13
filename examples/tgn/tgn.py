@@ -2,7 +2,7 @@ import torch
 import tglite as tg
 
 from torch import nn, Tensor
-from tglite.nn import TemporalAttnLayer, TemporalAttnLayer0_2_perfCeil, TemporalAttnLayer_2_perfCeil, TemporalAttnLayer_precompute, TemporalAttnLayer_0_fusion1_testblkm
+from tglite.nn import TemporalAttnLayer, TemporalAttnLayer0_2_perfCeil, TemporalAttnLayer_2_perfCeil, TemporalAttnLayer_precompute, TemporalAttnLayer_0_fusion1_testblkm, TemporalAttnLayer_1_fusion1_testblkm
 from tglite._stats import tt
 import threading
 
@@ -44,7 +44,7 @@ class TGN(nn.Module):
                             dim_out=dim_embed,
                             layer=0,
                             dropout=dropout)
-            self.attn1 = TemporalAttnLayer_0_fusion1_testblkm(ctx,
+            self.attn1 = TemporalAttnLayer_1_fusion1_testblkm(ctx,
                             num_heads=num_heads,
                             dim_node=dim_embed,
                             dim_edge=dim_edge,
@@ -131,7 +131,7 @@ class TGN(nn.Module):
         self.edge_predictor = support.EdgePredictor(dim=dim_embed)
         self.dedup = dedup
 
-        self.is_train = True
+        self.is_train = None
 
         # data for sample
         self.sampling_thread = None
@@ -139,6 +139,10 @@ class TGN(nn.Module):
         self._next_dsttimes = None
         self.curr_data = None
         self.next_data = None
+        # data for mailboxUpd
+        self._mailboxUpd_samples = None
+        self.curr_mailboxUpd = None
+        self.next_mailboxUpd = None
 
         # wyq add record uniq-nbrs
         self.dstnodes2latestNbrs = torch.zeros([tglite.config.num_nodes, 2], dtype=torch.long) # 可以用int # TODO **去冗余重建_mailbox**
@@ -848,11 +852,6 @@ class TGN(nn.Module):
             blk.g.mem.update(unique_nodes, mem, unique_mail_ts)
 
         return mem[inverse_indices]
-
-    def _load_new_samples_blkm(self):
-        if self._new_samples is None:
-            file_path = os.path.join(tglite.config.log_dir, f"new_samples_{tglite.config.log_name}.pt")
-            self._new_samples = torch.load(file_path)
     
     def _load_new_samples2(self):
         if self._new_samples is None:
@@ -877,47 +876,6 @@ class TGN(nn.Module):
         _eids_nxt, _idx_eids_nxt, \
         _nids_pre, _idx_nids_pre, _nids_cpu, _idx_nids_cpu, \
         _nids_nxt, _idx_nids_nxt = self.curr_data    
-    
-    def _init_samples0_online_TEST_BLKM(self, batch):
-        g = self.ctx.graph
-        nids = g._edges[batch._end_idx:batch._nxt_idx].T.reshape(-1)
-        nids = np.concatenate([nids, batch._neg_nodes]).astype(np.int32) # include neg nodes
-        times = np.tile(g._times[batch._end_idx:batch._nxt_idx], 3).astype(np.float32)
-        def dedup(nodes, times):
-            _, nodes, times, _inv_idx = _c.dedup_targets(nodes, times)
-            return nodes, times, _inv_idx
-        dstnodes, dsttimes, _inv_idx = dedup(nids, times)  # dedup and cache
-        _inv_idx = torch.tensor(_inv_idx)
-        dstindex, srcnodes, eid, ets = self.sampler.sample_no_blk(g, dstnodes, dsttimes)
-        b_dstnodes = torch.tensor(dstnodes)
-        b_dsttimes = torch.tensor(dsttimes)
-        b_dstindex = torch.tensor(dstindex)
-        b_srcnodes = torch.tensor(srcnodes)
-        b_eids = torch.tensor(eid)
-        b_ets = torch.tensor(ets)
-        b_num_src = b_srcnodes.shape[0]
-        b_num_dst = b_dstnodes.shape[0]
-        time_delta = b_dsttimes[b_dstindex] - b_ets
-        all_nids = torch.cat([b_dstnodes, b_srcnodes])
-        unique_time_delta, inverse_time_delta = torch.unique(time_delta, return_inverse=True)
-        unique_nids, inverse_nids = torch.unique(all_nids, return_inverse=True)
-        unique_eids, inverse_eids = torch.unique(b_eids, return_inverse=True)
-        unique_dstnodes, inverse_dstnodes = torch.unique(inverse_nids[:b_dstnodes.shape[0]], return_inverse=True)
-        unique_srcnodes, inverse_srcnodes = torch.unique(inverse_nids[b_dstnodes.shape[0]:], return_inverse=True)
-        x = torch.arange(b_srcnodes.shape[0])
-        Q_node_idx = inverse_dstnodes[b_dstindex[x]]
-        reindex = torch.unique(b_dstindex, return_inverse=True)[1]
-        # reduce_idx = torch.tensor(b_dstindex).int()
-        reduce_idx = b_dstindex.clone().detach().int()
-        # self.curr_data = _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
-        #                 unique_eids, inverse_eids, unique_nids, \
-        #                 unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
-        #                 Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst
-        self.curr_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
-                        unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
-                        unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
-                        unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
-                        Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst
     
     def _init_samples0_2_perfCeil(self):
             self.curr_data = self._new_samples[0]
@@ -1369,107 +1327,305 @@ class TGN(nn.Module):
                     return scores
 
 
-    def forward_test_blkm(self, batch: tg.TBatch) -> Tensor:
-        def dedup(nodes, times):
+    def _load_mailboxUpd_samples_blkm(self):
+        if self._mailboxUpd_samples is None:
+            if self.is_train:
+                file_path = os.path.join(tglite.config.log_dir, f"tglake_res_mailboxUpd/TRAIN_mailboxUpdBatchs_{tglite.config.log_name}.pt")
+            else:
+                file_path = os.path.join(tglite.config.log_dir, f"tglake_res_mailboxUpd/EVAL_mailboxUpdBatchs_{tglite.config.log_name}.pt")
+            self._mailboxUpd_samples = torch.load(file_path)
+
+    def _init_samples0_online_TEST_BLKM(self, batch):
+        print(f"_init_samples0_online_TEST_BLKM")
+        g = self.ctx.graph
+        nids = g._edges[batch._beg_idx:batch._end_idx].T.reshape(-1)
+        nids = np.concatenate([nids, batch._neg_nodes]).astype(np.int32) # include neg nodes
+        times = np.tile(g._times[batch._beg_idx:batch._end_idx], 3).astype(np.float32)
+
+        if self.num_layers == 1:
+            _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+            unique_eids, inverse_eids, unique_nids, \
+            unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+            Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst = self.sample_our(g, nids, times)
+        else:
+            assert self.num_layers == 2 # 两层的去重可以更极致
+            # b2_nodes = torch.cat([b_dstnodes, b_srcnodes])
+            # b2_times = torch.cat([b_dsttimes, b_ets])
+            _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+            unique_eids, inverse_eids, unique_nids, \
+            unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+            Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst, \
+            b2_inv_idx, b2_dstnodes, b2_dsttimes, b2_dstindex, b2_srcnodes, b2_eids, b2_ets, b2_unique_time_delta, b2_inverse_time_delta, \
+            b2_unique_eids, b2_inverse_eids, b2_unique_nids, \
+            b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, \
+            b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst = self.sample_our_layer2(g, nids, times)
+
+        if len(self._mailboxUpd_samples) > batch._b_id + 1:
+            mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self._mailboxUpd_samples[batch._b_id + 1]
+
+        with torch.cuda.StreamContext(torch.cuda.Stream()):
+            if self.num_layers == 1:
+                self.curr_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
+                                unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
+                                unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
+                                unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
+                                Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst
+            else:
+                assert self.num_layers == 2
+                self.curr_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
+                                unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
+                                unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
+                                unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
+                                Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst, \
+                                b2_inv_idx.to("cuda"), b2_dstnodes.to("cuda"), b2_dsttimes.to("cuda"), b2_dstindex.to("cuda"), b2_srcnodes.to("cuda"), b2_eids.to("cuda"), b2_ets.to("cuda"), \
+                                b2_unique_time_delta.to("cuda"), b2_inverse_time_delta.to("cuda"), \
+                                b2_unique_eids.to("cuda"), b2_inverse_eids.to("cuda"), b2_unique_nids.to("cuda"), \
+                                b2_unique_dstnodes.to("cuda"), b2_inverse_dstnodes.to("cuda"), b2_unique_srcnodes.to("cuda"), b2_inverse_srcnodes.to("cuda"), \
+                                b2_Q_node_idx.to("cuda"), b2_reindex.to("cuda"), b2_reduce_idx.to("cuda"), b2_num_src, b2_num_dst
+            self.curr_mailboxUpd = mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
+            TEST_BLKM_preload_sampling_event = torch.cuda.Event()
+            TEST_BLKM_preload_sampling_event.record()
+        TEST_BLKM_preload_sampling_event.synchronize()
+
+    def dedup_our(self, nodes, times):
             _, nodes, times, _inv_idx = _c.dedup_targets(nodes, times)
             return nodes, times, _inv_idx
 
-        def sample_our(g, nids, times):
-            dstnodes, dsttimes, _inv_idx = dedup(nids, times)  # dedup and cache
-            _inv_idx = torch.tensor(_inv_idx)
-            dstindex, srcnodes, eid, ets = self.sampler.sample_no_blk(g, dstnodes, dsttimes)
-            b_dstnodes = torch.tensor(dstnodes)
-            b_dsttimes = torch.tensor(dsttimes)
-            b_dstindex = torch.tensor(dstindex)
-            b_srcnodes = torch.tensor(srcnodes)
-            b_eids = torch.tensor(eid)
-            b_ets = torch.tensor(ets)
-            b_num_src = b_srcnodes.shape[0]
-            b_num_dst = b_dstnodes.shape[0]
-            time_delta = b_dsttimes[b_dstindex] - b_ets
-            all_nids = torch.cat([b_dstnodes, b_srcnodes])
-            unique_time_delta, inverse_time_delta = torch.unique_consecutive(time_delta, return_inverse=True)
-            # print(f"sample_our all_nids {all_nids.shape}")
-            unique_nids, inverse_nids = torch.unique_consecutive(all_nids, return_inverse=True)
-            # print(f"sample_our unique_nids {unique_nids.shape}")
-            unique_eids, inverse_eids = torch.unique_consecutive(b_eids, return_inverse=True)
-            unique_dstnodes, inverse_dstnodes = torch.unique_consecutive(inverse_nids[:b_dstnodes.shape[0]], return_inverse=True)
-            unique_srcnodes, inverse_srcnodes = torch.unique_consecutive(inverse_nids[b_dstnodes.shape[0]:], return_inverse=True)
-            x = torch.arange(b_srcnodes.shape[0])
-            Q_node_idx = inverse_dstnodes[b_dstindex[x]]
-            reindex = torch.unique(b_dstindex, return_inverse=True)[1]
-            # reduce_idx = torch.tensor(b_dstindex).int()
-            reduce_idx = b_dstindex.clone().detach().int()
-            return _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
-                    unique_eids, inverse_eids, unique_nids, \
-                    unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
-                    Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst
+    # TODO unique_consecutive
+    def sample_our(self, g, nids, times): # TODO sample 这还得花时间想清楚 是否需要重排?
+        dstnodes, dsttimes, _inv_idx = self.dedup_our(nids, times)  # dedup and cache
+        _inv_idx = torch.tensor(_inv_idx)
+        dstindex, srcnodes, eid, ets = self.sampler.sample_no_blk(g, dstnodes, dsttimes)
+        b_dstnodes = torch.tensor(dstnodes)
+        b_dsttimes = torch.tensor(dsttimes)
+        b_dstindex = torch.tensor(dstindex)
+        b_srcnodes = torch.tensor(srcnodes)
+        b_eids = torch.tensor(eid)
+        b_ets = torch.tensor(ets)
+        b_num_src = b_srcnodes.shape[0]
+        b_num_dst = b_dstnodes.shape[0]
+        time_delta = b_dsttimes[b_dstindex] - b_ets
+        all_nids = torch.cat([b_dstnodes, b_srcnodes])
+        # unique_time_delta, inverse_time_delta = torch.unique_consecutive(time_delta, return_inverse=True)
+        # unique_nids, inverse_nids = torch.unique_consecutive(all_nids, return_inverse=True)
+        # unique_eids, inverse_eids = torch.unique_consecutive(b_eids, return_inverse=True)
+        # unique_dstnodes, inverse_dstnodes = torch.unique_consecutive(inverse_nids[:b_dstnodes.shape[0]], return_inverse=True)
+        # unique_srcnodes, inverse_srcnodes = torch.unique_consecutive(inverse_nids[b_dstnodes.shape[0]:], return_inverse=True)
+        unique_time_delta, inverse_time_delta = torch.unique(time_delta, return_inverse=True)
+        unique_nids, inverse_nids = torch.unique(all_nids, return_inverse=True)
+        unique_eids, inverse_eids = torch.unique(b_eids, return_inverse=True)
+        unique_dstnodes, inverse_dstnodes = torch.unique(inverse_nids[:b_dstnodes.shape[0]], return_inverse=True)
+        unique_srcnodes, inverse_srcnodes = torch.unique(inverse_nids[b_dstnodes.shape[0]:], return_inverse=True)
+        x = torch.arange(b_srcnodes.shape[0])
+        Q_node_idx = inverse_dstnodes[b_dstindex[x]]
+        reindex = torch.unique(b_dstindex, return_inverse=True)[1]
+        # reduce_idx = torch.tensor(b_dstindex).int()
+        reduce_idx = b_dstindex.clone().detach().int()
 
+        return _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+                unique_eids, inverse_eids, unique_nids, \
+                unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+                Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst
+    
+    def sample_our_layer2(self, g, nids, times):
+        dstnodes, dsttimes, _inv_idx = self.dedup_our(nids, times)  # dedup and cache
+        _inv_idx = torch.tensor(_inv_idx)
+        dstindex, srcnodes, eid, ets = self.sampler.sample_no_blk(g, dstnodes, dsttimes)
+        b_dstnodes = torch.tensor(dstnodes)
+        b_dsttimes = torch.tensor(dsttimes)
+        b_dstindex = torch.tensor(dstindex)
+        b_srcnodes = torch.tensor(srcnodes)
+        b_eids = torch.tensor(eid)
+        b_ets = torch.tensor(ets)
+        b_num_src = b_srcnodes.shape[0]
+        b_num_dst = b_dstnodes.shape[0]
+        time_delta = b_dsttimes[b_dstindex] - b_ets
+        unique_time_delta, inverse_time_delta = torch.unique(time_delta, return_inverse=True)
+        all_nids = torch.cat([b_dstnodes, b_srcnodes])
+        unique_nids, _ = torch.unique(all_nids, return_inverse=True)
+        unique_eids, inverse_eids = torch.unique(b_eids, return_inverse=True)
+        x = torch.arange(b_srcnodes.shape[0])
+        reindex = torch.unique(b_dstindex, return_inverse=True)[1]
+        reduce_idx = b_dstindex.clone().detach().int()
+
+        b2_nodes = torch.cat([b_dstnodes, b_srcnodes])
+        b2_times = torch.cat([b_dsttimes, b_ets])
+
+        b2_dstnodes, b2_dsttimes, b2_inv_idx = self.dedup_our(b2_nodes, b2_times)  # dedup and cache
+        b2_inv_idx = torch.tensor(b2_inv_idx)
+        b2_dstindex, b2_srcnodes, b2_eid, b2_ets = self.sampler.sample_no_blk(g, b2_dstnodes, b2_dsttimes)
+        b2_dstnodes = torch.tensor(b2_dstnodes)
+        b2_dsttimes = torch.tensor(b2_dsttimes)
+        b2_dstindex = torch.tensor(b2_dstindex)
+        b2_srcnodes = torch.tensor(b2_srcnodes)
+        b2_eids = torch.tensor(b2_eid)
+        b2_ets = torch.tensor(b2_ets)
+
+        unique_dst_inv_idx, inverse_dst_inv_idx = torch.unique(b2_inv_idx[:b_dstnodes.shape[0]], return_inverse=True)
+        unique_src_inv_idx, inverse_src_inv_idx = torch.unique(b2_inv_idx[b_dstnodes.shape[0]:], return_inverse=True)
+        unique_dstnodes = unique_dst_inv_idx
+        inverse_dstnodes = inverse_dst_inv_idx
+        unique_srcnodes = unique_src_inv_idx
+        inverse_srcnodes = inverse_src_inv_idx
+        Q_node_idx = inverse_dst_inv_idx[b_dstindex[x]]
+
+        b2_num_src = b2_srcnodes.shape[0]
+        b2_num_dst = b2_dstnodes.shape[0]
+        b2_time_delta = b2_dsttimes[b2_dstindex] - b2_ets
+        b2_all_nids = torch.cat([b2_dstnodes, b2_srcnodes])
+        b2_unique_time_delta, b2_inverse_time_delta = torch.unique(b2_time_delta, return_inverse=True)
+        b2_unique_nids, b2_inverse_nids = torch.unique(b2_all_nids, return_inverse=True)
+        b2_unique_eids, b2_inverse_eids = torch.unique(b2_eids, return_inverse=True)
+        b2_unique_dstnodes, b2_inverse_dstnodes = torch.unique(b2_inverse_nids[:b2_dstnodes.shape[0]], return_inverse=True)
+        b2_unique_srcnodes, b2_inverse_srcnodes = torch.unique(b2_inverse_nids[b2_dstnodes.shape[0]:], return_inverse=True)
+        x = torch.arange(b2_srcnodes.shape[0])
+        b2_Q_node_idx = b2_inverse_dstnodes[b2_dstindex[x]]
+        b2_reindex = torch.unique(b2_dstindex, return_inverse=True)[1]
+        # reduce_idx = torch.tensor(b_dstindex).int()
+        b2_reduce_idx = b2_dstindex.clone().detach().int()
+        
+        return _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+                unique_eids, inverse_eids, unique_nids, \
+                unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+                Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst, \
+                b2_inv_idx, b2_dstnodes, b2_dsttimes, b2_dstindex, b2_srcnodes, b2_eids, b2_ets, b2_unique_time_delta, b2_inverse_time_delta, \
+                b2_unique_eids, b2_inverse_eids, b2_unique_nids, \
+                b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, \
+                b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst
+   
+    def forward_test_blkm(self, batch: tg.TBatch) -> Tensor:
         with nvtx.annotate("forward", color="purple"):
             g = self.ctx.graph
+            # with nvtx.annotate("thread sampling", color="purple"):
+            #     def sampling(self, batch):
+            #         # sampling
+            #         nids = g._edges[batch._end_idx:batch._nxt_idx].T.reshape(-1)
+            #         nids = np.concatenate([nids, batch._nxt_neg_nodes]).astype(np.int32) # include neg nodes
+            #         times = np.tile(g._times[batch._end_idx:batch._nxt_idx], 3).astype(np.float32)
+            #         if self.num_layers == 1:
+            #             _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+            #             unique_eids, inverse_eids, unique_nids, \
+            #             unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+            #             Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst = self.sample_our(g, nids, times)
+            #         else:
+            #             assert self.num_layers == 2
+            #             _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+            #             unique_eids, inverse_eids, unique_nids, \
+            #             unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+            #             Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst, \
+            #             b2_inv_idx, b2_dstnodes, b2_dsttimes, b2_dstindex, b2_srcnodes, b2_eids, b2_ets, b2_unique_time_delta, b2_inverse_time_delta, \
+            #             b2_unique_eids, b2_inverse_eids, b2_unique_nids, \
+            #             b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, \
+            #             b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst = self.sample_our_layer2(g, nids, times)
+                    
+            #         if len(self._mailboxUpd_samples) > batch._b_id + 1:
+            #             mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self._mailboxUpd_samples[batch._b_id + 1]
+
+            #         # loading 
+            #         with torch.cuda.StreamContext(torch.cuda.Stream()):
+            #             '''
+            #             _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+            #             unique_eids, inverse_eids, unique_nids, \
+            #             unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+            #             Q_node_idx, reindex
+            #             '''
+            #             if self.num_layers == 1:
+            #                 self.next_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
+            #                                 unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
+            #                                 unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
+            #                                 unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
+            #                                 Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst
+            #             else:
+            #                 assert self.num_layers == 2
+            #                 self.next_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
+            #                                 unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
+            #                                 unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
+            #                                 unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
+            #                                 Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst, \
+            #                                 b2_inv_idx.to("cuda"), b2_dstnodes.to("cuda"), b2_dsttimes.to("cuda"), b2_dstindex.to("cuda"), b2_srcnodes.to("cuda"), b2_eids.to("cuda"), b2_ets.to("cuda"), \
+            #                                 b2_unique_time_delta.to("cuda"), b2_inverse_time_delta.to("cuda"), \
+            #                                 b2_unique_eids.to("cuda"), b2_inverse_eids.to("cuda"), b2_unique_nids.to("cuda"), \
+            #                                 b2_unique_dstnodes.to("cuda"), b2_inverse_dstnodes.to("cuda"), b2_unique_srcnodes.to("cuda"), b2_inverse_srcnodes.to("cuda"), \
+            #                                 b2_Q_node_idx.to("cuda"), b2_reindex.to("cuda"), b2_reduce_idx.to("cuda"), b2_num_src, b2_num_dst
+            #             self.next_mailboxUpd = mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
+            #             TEST_BLKM_preload_sampling_event = torch.cuda.Event()
+            #             TEST_BLKM_preload_sampling_event.record()
+            #         TEST_BLKM_preload_sampling_event.synchronize()
+            #     # 同步curr batch
+            #     if self.sampling_thread is not None:
+            #         self.sampling_thread.join()
+            #         # print(f"sampling thread join")
+            #         assert self.next_data is not None
+            #         assert self.curr_data == None
+            #         self.curr_data = self.next_data
+            #         self.curr_mailboxUpd = self.next_mailboxUpd
+            #         self.next_data = None # 指示当前batch 可以开始下一轮预采样了
+            #     # 总是采样next batch
+            #     with nvtx.annotate("thread sampling nxt", color="purple"):
+            #         # print(f"    here thread sampling nxt")
+            #         assert self.curr_data is not None
+            #         assert self.next_data == None
+            #         if batch._nxt_idx is not None: # 如果还有next batch
+            #             # print(f"sampling thread start")
+            #             self.sampling_thread = threading.Thread(target=sampling, args=(self, batch))
+            #             self.sampling_thread.start()
+
+            ### accurate kernel performance
             with nvtx.annotate("thread sampling", color="purple"):
-                def sampling(self, batch):
-                    # sampling
-                    nids = g._edges[batch._end_idx:batch._nxt_idx].T.reshape(-1)
-                    nids = np.concatenate([nids, batch._neg_nodes]).astype(np.int32) # include neg nodes
-                    times = np.tile(g._times[batch._end_idx:batch._nxt_idx], 3).astype(np.float32)
+                # sampling
+                nids = g._edges[batch._beg_idx:batch._end_idx].T.reshape(-1)
+                nids = np.concatenate([nids, batch._neg_nodes]).astype(np.int32) # include neg nodes
+                times = np.tile(g._times[batch._beg_idx:batch._end_idx], 3).astype(np.float32)
+                if self.num_layers == 1:
                     _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
                     unique_eids, inverse_eids, unique_nids, \
                     unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
-                    Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst = sample_our(g, nids, times)
-                    if self.num_layers > 1:
+                    Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst = self.sample_our(g, nids, times)
+                else:
+                    assert self.num_layers == 2
+                    _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+                    unique_eids, inverse_eids, unique_nids, \
+                    unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+                    Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst, \
+                    b2_inv_idx, b2_dstnodes, b2_dsttimes, b2_dstindex, b2_srcnodes, b2_eids, b2_ets, b2_unique_time_delta, b2_inverse_time_delta, \
+                    b2_unique_eids, b2_inverse_eids, b2_unique_nids, \
+                    b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, \
+                    b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst = self.sample_our_layer2(g, nids, times)
+                
+                if len(self._mailboxUpd_samples) > batch._b_id:
+                    # import pdb;pdb.set_trace()
+                    mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self._mailboxUpd_samples[batch._b_id]
+
+                # loading 
+                with torch.cuda.StreamContext(torch.cuda.Stream()):
+                    '''
+                    _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
+                    unique_eids, inverse_eids, unique_nids, \
+                    unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+                    Q_node_idx, reindex
+                    '''
+                    if self.num_layers == 1:
+                        self.curr_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
+                                        unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
+                                        unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
+                                        unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
+                                        Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst
+                    else:
                         assert self.num_layers == 2
-                        b2_nodes = torch.cat([b_dstnodes, b_srcnodes])
-                        b2_times = torch.cat([b_dsttimes, b_ets])
-                        b2_inv_idx, b2_dstnodes, b2_dsttimes, b2_dstindex, b2_srcnodes, b2_eids, b2_ets, b2_unique_time_delta, b2_inverse_time_delta, \
-                        b2_unique_eids, b2_inverse_eids, b2_unique_nids, \
-                        b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, \
-                        b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst = sample_our(g, b2_nodes, b2_times)
-                    # loading 
-                    with torch.cuda.StreamContext(torch.cuda.Stream()):
-                        '''
-                        _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
-                        unique_eids, inverse_eids, unique_nids, \
-                        unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
-                        Q_node_idx, reindex
-                        '''
-                        if self.num_layers == 1:
-                            self.next_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
-                                            unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
-                                            unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
-                                            unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
-                                            Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst
-                        else:
-                            assert self.num_layers == 2
-                            self.next_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
-                                            unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
-                                            unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
-                                            unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
-                                            Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst, \
-                                            b2_inv_idx.to("cuda"), b2_dstnodes.to("cuda"), b2_dsttimes.to("cuda"), b2_dstindex.to("cuda"), b2_srcnodes.to("cuda"), b2_eids.to("cuda"), b2_ets.to("cuda"), \
-                                            b2_unique_time_delta.to("cuda"), b2_inverse_time_delta.to("cuda"), \
-                                            b2_unique_eids.to("cuda"), b2_inverse_eids.to("cuda"), b2_unique_nids.to("cuda"), \
-                                            b2_unique_dstnodes.to("cuda"), b2_inverse_dstnodes.to("cuda"), b2_unique_srcnodes.to("cuda"), b2_inverse_srcnodes.to("cuda"), \
-                                            b2_Q_node_idx.to("cuda"), b2_reindex.to("cuda"), b2_reduce_idx.to("cuda"), b2_num_src, b2_num_dst
-                        TEST_BLKM_preload_sampling_event = torch.cuda.Event()
-                        TEST_BLKM_preload_sampling_event.record()
-                    TEST_BLKM_preload_sampling_event.synchronize()
-                # 同步curr batch
-                if self.sampling_thread is not None:
-                    self.sampling_thread.join()
-                    assert self.next_data is not None
-                    assert self.curr_data == None
-                    self.curr_data = self.next_data
-                    self.next_data = None # 指示当前batch 可以开始下一轮预采样了
-                # 总是采样next batch
-                with nvtx.annotate("thread sampling nxt", color="purple"):
-                    # print(f"    here thread sampling nxt")
-                    assert self.curr_data is not None
-                    assert self.next_data == None
-                    if batch._nxt_idx is not None: # 如果还有next batch
-                        self.sampling_thread = threading.Thread(target=sampling, args=(self, batch))
-                        self.sampling_thread.start()
-                    
+                        self.curr_data = _inv_idx.to("cuda"), b_dstnodes.to("cuda"), b_dsttimes.to("cuda"), b_dstindex.to("cuda"), b_srcnodes.to("cuda"), b_eids.to("cuda"), b_ets.to("cuda"), \
+                                        unique_time_delta.to("cuda"), inverse_time_delta.to("cuda"), \
+                                        unique_eids.to("cuda"), inverse_eids.to("cuda"), unique_nids.to("cuda"), \
+                                        unique_dstnodes.to("cuda"), inverse_dstnodes.to("cuda"), unique_srcnodes.to("cuda"), inverse_srcnodes.to("cuda"), \
+                                        Q_node_idx.to("cuda"), reindex.to("cuda"), reduce_idx.to("cuda"), b_num_src, b_num_dst, \
+                                        b2_inv_idx.to("cuda"), b2_dstnodes.to("cuda"), b2_dsttimes.to("cuda"), b2_dstindex.to("cuda"), b2_srcnodes.to("cuda"), b2_eids.to("cuda"), b2_ets.to("cuda"), \
+                                        b2_unique_time_delta.to("cuda"), b2_inverse_time_delta.to("cuda"), \
+                                        b2_unique_eids.to("cuda"), b2_inverse_eids.to("cuda"), b2_unique_nids.to("cuda"), \
+                                        b2_unique_dstnodes.to("cuda"), b2_inverse_dstnodes.to("cuda"), b2_unique_srcnodes.to("cuda"), b2_inverse_srcnodes.to("cuda"), \
+                                        b2_Q_node_idx.to("cuda"), b2_reindex.to("cuda"), b2_reduce_idx.to("cuda"), b2_num_src, b2_num_dst
+                    self.curr_mailboxUpd = mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
+                    TEST_BLKM_preload_sampling_event = torch.cuda.Event()
+                    TEST_BLKM_preload_sampling_event.record()
+                TEST_BLKM_preload_sampling_event.synchronize()
             # using sampling data
             if self.num_layers == 1:
                 _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, \
@@ -1488,49 +1644,85 @@ class TGN(nn.Module):
                 b2_unique_eids, b2_inverse_eids, b2_unique_nids, \
                 b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, \
                 b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst = self.curr_data
+            mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self.curr_mailboxUpd
             self.curr_data = None # curr_data被使用后即赋值为None
 
-            # head = TBlock(self.ctx, 0, b_dstnodes.numpy(), b_dsttimes.numpy(), b_dstindex.numpy(), b_srcnodes.numpy(), b_eids.numpy(), b_ets.numpy())
-
-            with nvtx.annotate("update mem", color="purple"):
-                with nvtx.annotate("cal mail_delta", color="red"): # TODO
-                    unique_mail_ts = g.mailbox.time[unique_nids] # on cpu
-                    delta = unique_mail_ts - g.mem.time[unique_nids]
-                    mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to("cuda"))
-                mail = torch.cat([g.mailbox.mail[unique_nids], mail_delta], dim=1)
-                mem = g.mem.data[unique_nids]
-                mem = self.mem_cell(mail, mem)
-                # 写回也可以pipeline TODO 不一定有必要，可以和后面的计算掩盖
-                g.mem.update(unique_nids, mem, unique_mail_ts) # 目前为写回CPU
-
-            # no scatter    
-            # 替换tail.nfeat() 
-            tail_nfeat = self.ctx.manager_nfeat.get_data_batch(unique_nids)
-            nfeat = tail_nfeat if self.nfeat_map is None else self.nfeat_map(tail_nfeat)
-            # 替换tail.efeat()
-            tail_efeat = self.ctx.manager_efeat.get_data_batch(unique_eids)
-
-            # no scatter
-            nodeData = nfeat + mem
-
+            # updating and aggregating
             if self.num_layers == 1:
+                with nvtx.annotate("update mem", color="purple"):
+                    with nvtx.annotate("cal mail_delta", color="red"): # TODO
+                        with nvtx.annotate("get_mailbox_time", color="blue"): # TODO
+                            unique_mail_ts = self.ctx.manager_mem_mail.get_mailbox_time(unique_nids)
+                        with nvtx.annotate("get_mem_time", color="blue"): # TODO
+                            delta = unique_mail_ts - self.ctx.manager_mem_mail.get_mem_time(unique_nids)
+                        with nvtx.annotate("precomputed_times", color="blue"): # TODO
+                            mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to("cuda"))
+
+                    with nvtx.annotate("concat mail", color="blue"): # TODO
+                        mail = torch.cat([self.ctx.manager_mem_mail.get_mailbox_data(unique_nids), mail_delta], dim=1)
+                    with nvtx.annotate("concat mem", color="blue"): # TODO
+                        mem = self.ctx.manager_mem_mail.get_mem_data(unique_nids)
+                    
+                    with nvtx.annotate("nn.grucell", color="blue"): # TODO
+                        mem = self.mem_cell(mail, mem)
+                    with nvtx.annotate("update_mem_batch", color="blue"): # TODO
+                        with torch.no_grad():
+                            self.ctx.manager_mem_mail.update_mem_batch(unique_nids, mem, unique_mail_ts, mailbox_uniq, mailbox_nbrs)
+                
+                # with nvtx.annotate("update mem", color="purple"):
+                #     unique_mail_ts = g.mailbox.time[unique_nids] # on cpu
+                #     delta = unique_mail_ts - g.mem.time[unique_nids]
+                #     mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to("cuda"))
+                # mail = torch.cat([g.mailbox.mail[unique_nids], mail_delta], dim=1)
+                # mem = g.mem.data[unique_nids]
+                # with nvtx.annotate("nn.grucell", color="blue"): # TODO
+                #     mem = self.mem_cell(mail, mem)
+                # # 写回也可以pipeline TODO 不一定有必要，可以和后面的计算掩盖
+                # g.mem.update(unique_nids, mem, unique_mail_ts) # 目前为写回CPU
+
+                # no scatter    
+                # 替换tail.nfeat() 
+                with nvtx.annotate("get_data_batch nfeat efeat", color="purple"):
+                    with nvtx.annotate("nfeat get_data_batch", color="purple"):
+                        tail_nfeat = self.ctx.manager_nfeat.get_data_batch(unique_nids)
+                    with nvtx.annotate("nfeat nfeat_map", color="purple"):
+                        nfeat = tail_nfeat if self.nfeat_map is None else self.nfeat_map(tail_nfeat)
+                    # 替换tail.efeat()
+                    with nvtx.annotate("efeat get_data_batch", color="purple"):
+                        tail_efeat = self.ctx.manager_efeat.get_data_batch(unique_eids)
                 # using attn0, b_*
                 with nvtx.annotate("op.aggregate", color="green"):
                     # def forward(self, blk: TBlock, Q_node_idx, nodeData_dst, node_dst_inverse, nodeData_src, node_src_inverse, efeat_unique, efeat_inverse, unique_time_delta, time_inverse) -> Tensor:
-                    output = self.attn0(b_num_src, b_num_dst, reduce_idx, reindex, Q_node_idx, nodeData[unique_dstnodes], inverse_dstnodes, nodeData[unique_srcnodes], inverse_srcnodes, tail_efeat, inverse_eids, unique_time_delta, inverse_time_delta)
-                    output = output[_inv_idx]
+                    output = self.attn0(b_num_src, b_num_dst, reduce_idx, reindex, Q_node_idx, nfeat, mem, unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, tail_efeat, inverse_eids, unique_time_delta, inverse_time_delta)
+                embeds = output[_inv_idx]
             else:
                 assert self.num_layers == 2
-                # using attn0, b2_*
-                b2_reduce_idx = torch.tensor(b2_dstindex).int().cuda()
-                output = self.attn0(b2_num_src, b2_num_dst, b2_reduce_idx, b2_reindex, b2_Q_node_idx, nodeData[unique_dstnodes], inverse_dstnodes, nodeData[unique_srcnodes], inverse_srcnodes, tail_efeat, inverse_eids, unique_time_delta, inverse_time_delta)
-                # using attn1, b_*
-                # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), inverse_eids.to("cuda"), unique_time_delta, inverse_time_delta)
-                # output = self.attn1(head, nodeData, _reverse_nids.to("cuda"), head.efeat(), inverse_eids.to("cuda"), unique_time_delta, inverse_time_delta)
-                output = self.attn1(head)
-                output = output[_inv_idx]
-            embeds = output
+                with nvtx.annotate("update mem", color="purple"):
+                    with nvtx.annotate("cal mail_delta", color="red"): # TODO
+                        unique_mail_ts = g.mailbox.time[b2_unique_nids] # on cpu
+                        delta = unique_mail_ts - g.mem.time[b2_unique_nids]
+                        mail_delta = tg.op.precomputed_times(self.ctx, 0, self.mem_time_encode, delta.squeeze().to("cuda"))
+                    mail = torch.cat([g.mailbox.mail[b2_unique_nids], mail_delta], dim=1)
+                    mem = g.mem.data[b2_unique_nids]
+                    mem = self.mem_cell(mail, mem)
+                    # 写回也可以pipeline TODO 不一定有必要，可以和后面的计算掩盖
+                    g.mem.update(b2_unique_nids, mem, unique_mail_ts) # 目前为写回CPU
 
+                # 替换tail.nfeat() 
+                tail_nfeat = self.ctx.manager_nfeat.get_data_batch(b2_unique_nids)
+                nfeat = tail_nfeat if self.nfeat_map is None else self.nfeat_map(tail_nfeat)
+                # 替换tail.efeat()
+                tail_efeat = self.ctx.manager_efeat.get_data_batch(b2_unique_eids)
+                tail_efeat_attn1 = self.ctx.manager_efeat.get_data_batch(unique_eids)
+                # using attn0, b2_*
+                # import pdb;pdb.set_trace()
+                output = self.attn0(b2_num_src, b2_num_dst, b2_reduce_idx, b2_reindex, b2_Q_node_idx, nfeat, mem, b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, tail_efeat, b2_inverse_eids, b2_unique_time_delta, b2_inverse_time_delta)
+                # output = output[b2_inv_idx]
+                # using attn1, b_*
+                output = self.attn1(b_num_src, b_num_dst, reduce_idx, reindex, Q_node_idx, output, b2_inv_idx, unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, tail_efeat_attn1, inverse_eids, unique_time_delta, inverse_time_delta)
+                embeds = output[_inv_idx]
+            
+            # print(f"embeds {embeds.shape}")
             # compute scores
             with nvtx.annotate("compute score", color="purple"):
                 src, dst, neg = batch.split_data(embeds) # 这里还可以去冗余
@@ -1542,46 +1734,58 @@ class TGN(nn.Module):
             del dst
             del neg
             with nvtx.annotate("save raw msgs", color="purple"):
+                ### 原版消融
                 # self.save_raw_msgs_TEST_BLKM(batch)
-                sdev = batch.g.storage_device()
-                mem = batch.g.mem.data
+                # sdev = batch.g.storage_device()
+                # mem = batch.g.mem.data
 
-                with nvtx.annotate("save raw msgs-block_adj", color="red"):
-                    # blk = batch.block_adj(self.ctx) # return TBlock(ctx, 0, dstnodes, ets, dstindex, srcnodes, eids, ets)
-                    nids = g._edges[batch._beg_idx:batch._end_idx]
-                    dstnodes = nids.T.reshape(-1).astype(np.int32)
+                # with nvtx.annotate("save raw msgs-block_adj", color="red"):
+                #     # blk = batch.block_adj(self.ctx) # return TBlock(ctx, 0, dstnodes, ets, dstindex, srcnodes, eids, ets)
+                #     nids = g._edges[batch._beg_idx:batch._end_idx]
+                #     dstnodes = nids.T.reshape(-1).astype(np.int32)
 
-                    nids = g._edges[batch._beg_idx:batch._end_idx]
-                    nids = np.flip(nids, axis=1)
-                    srcnodes = nids.T.reshape(-1).astype(np.int32)
+                #     nids = g._edges[batch._beg_idx:batch._end_idx]
+                #     nids = np.flip(nids, axis=1)
+                #     srcnodes = nids.T.reshape(-1).astype(np.int32)
 
-                    eid = np.tile(np.arange(batch._beg_idx, batch._end_idx, dtype=np.int32), 2)
+                #     eid = np.tile(np.arange(batch._beg_idx, batch._end_idx, dtype=np.int32), 2)
 
-                    times = g._times[batch._beg_idx:batch._end_idx]
-                    ets = np.tile(times, 2).astype(np.float32)
+                #     times = g._times[batch._beg_idx:batch._end_idx]
+                #     ets = np.tile(times, 2).astype(np.float32)
                     
-                with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
-                    # blk = tg.op.coalesce(blk, by='latest')
-                    assert len(dstnodes) == len(srcnodes)
-                    uniq_nodes, uniq_idx = np.unique(dstnodes, return_index=True)
-                    idx = _c.find_latest_uniq(uniq_nodes, dstnodes, ets)
-                    srcnodes = srcnodes[idx]
-                    eid = eid[idx]
-                    ets = ets[idx]
-                    dstnodes = uniq_nodes
-                    # dsttimes = dsttimes[uniq_idx]
+                # with nvtx.annotate("save raw msgs-op.coalesce", color="red"):
+                #     # blk = tg.op.coalesce(blk, by='latest')
+                #     assert len(dstnodes) == len(srcnodes)
+                #     uniq_nodes, uniq_idx = np.unique(dstnodes, return_index=True)
+                #     idx = _c.find_latest_uniq(uniq_nodes, dstnodes, ets)
+                #     srcnodes = srcnodes[idx]
+                #     eid = eid[idx]
+                #     ets = ets[idx]
+                #     dstnodes = uniq_nodes
+                #     # dsttimes = dsttimes[uniq_idx]
 
-                with nvtx.annotate("save raw msgs-uniq nbrs", color="red"):
-                    # 写回数据量实际很小 μs级别
-                    # import pdb;pdb.set_trace()
-                    uniq = torch.from_numpy(dstnodes).long().to(sdev)
-                    nbrs = torch.from_numpy(srcnodes).long().to(sdev)
+                # with nvtx.annotate("save raw msgs-uniq nbrs", color="red"):
+                #     # 写回数据量实际很小 μs级别
+                #     # import pdb;pdb.set_trace()
+                #     uniq = torch.from_numpy(dstnodes).long().to(sdev)
+                #     nbrs = torch.from_numpy(srcnodes).long().to(sdev)
                     
-                    efeat = self.ctx.manager_efeat.get_data_batch(eid)
-                    mail = torch.cat([mem[uniq], mem[nbrs], efeat], dim=1)
-                    mail_ts = torch.from_numpy(ets).to(sdev)
-                with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
-                    batch.g.mailbox.store(uniq, mail, mail_ts, uniq, nbrs, batch._b_id)
+                #     efeat = self.ctx.manager_efeat.get_data_batch(eid)
+                #     mail = torch.cat([mem[uniq], mem[nbrs], efeat], dim=1)
+                #     mail_ts = torch.from_numpy(ets).to(sdev)
+                # with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
+                #     batch.g.mailbox.store(uniq, mail, mail_ts, uniq, nbrs, batch._b_id)
+                
+                ### 二改消融
+                # mem = batch.g.mem.data
+                # efeat = self.ctx.manager_efeat.get_data_batch(mailbox_eid)
+                # with nvtx.annotate("save raw msgs-torch.cat", color="red"):
+                #     mail = torch.cat([mem[mailbox_uniq], mem[mailbox_nbrs], efeat], dim=1)
+                # with nvtx.annotate("save raw msgs-store", color="red"):
+                #     batch.g.mailbox.store(mailbox_uniq.long(), mail, mailbox_ets, mailbox_uniq.long(), mailbox_nbrs.long(), batch._b_id)
+                
+                with torch.no_grad():
+                    self.ctx.manager_mem_mail.update_mailbox(mailbox_uniq, mailbox_nbrs, mailbox_eid, mailbox_ets)
             return scores
 
 
@@ -1751,6 +1955,7 @@ class TGN(nn.Module):
             t_start = tt.start()
             with nvtx.annotate("save raw msgs", color="purple"):
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+                # print(f"batch {batch._b_id}")
                 self.save_raw_msgs(batch)
                 # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             tt.t_post_update += tt.elapsed(t_start)
@@ -1824,5 +2029,12 @@ class TGN(nn.Module):
             mail_ts = torch.from_numpy(blk.ets).to(sdev)
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
         with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
+
+            # # ! mailbox uniq, nbrs, ets 统计
+            # if self.is_train:
+            #     add_mailbox_upd_batch((uniq.int(), nbrs.int(), mail_ts, torch.tensor(blk.eid).int()))
+            # else:
+            #     add_mailbox_upd_batch_eval((uniq.int(), nbrs.int(), mail_ts, torch.tensor(blk.eid).int()))
+
             batch.g.mailbox.store(uniq, mail, mail_ts)
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)

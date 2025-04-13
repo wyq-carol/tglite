@@ -545,9 +545,213 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         out = self.layer_norm(out)
         return out
 
+    @torch.compile
+    def fusion_0(self, nfeat, mem, unique_dstnodes, unique_srcnodes):
+        nodeData = nfeat + mem
+        nodeData_dst = nodeData[unique_dstnodes]
+        nodeData_src = nodeData[unique_srcnodes]
+        return nodeData_dst, nodeData_src
+    
+    @torch.compile
+    def fusion_0_1(self, nfeat, unique_dstnodes, unique_srcnodes):
+        nodeData_dst = nfeat[unique_dstnodes]
+        nodeData_src = nfeat[unique_srcnodes]
+        return nodeData_dst, nodeData_src
+
     # ! 先以压缩为核心写kernel，即相同的只存储一次
-    def forward(self, num_src, num_dst, reduce_idx, reindex, Q_node_idx, nodeData_dst, node_dst_inverse, nodeData_src, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
+    def forward(self, num_src, num_dst, reduce_idx, reindex, Q_node_idx, nfeat, mem, unique_dstnodes, node_dst_inverse, unique_srcnodes, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
         # TODO _g_dstindex 可以进一步预处理
+        ## fusion0
+        with nvtx.annotate("fusion_0", color="blue"):
+            if self.layer == 0:
+                nodeData_dst, nodeData_src = self.fusion_0(nfeat, mem, unique_dstnodes, unique_srcnodes)
+                ## fusion0 消融
+                # nodeData = nfeat + mem
+                # nodeData_dst = nodeData[unique_dstnodes]
+                # nodeData_src = nodeData[unique_srcnodes]
+            else:
+                assert self.layer == 1
+                nodeData_dst, nodeData_src = self.fusion_0_1(nfeat, unique_dstnodes, unique_srcnodes)
+        
+        time_unique = self.fusion_precompute(self.layer, _unique_time_delta)
+
+        # nodeData_src = nodeData_src.contiguous()
+        # nodeData_dst = nodeData_dst.contiguous()
+        # efeat_unique = efeat_unique.contiguous()
+        # time_unique = time_unique.contiguous()
+        # print(f"nodeData_dst {nodeData_dst.shape} {nodeData_dst.is_contiguous()}")
+        # print(f"nodeData_src {nodeData_src.shape} {nodeData_src.is_contiguous()}")
+        # print(f"efeat_unique {efeat_unique.shape} {efeat_unique.is_contiguous()}")
+        # print(f"time_unique  {time_unique.shape} {time_unique.is_contiguous()}")
+        
+        with nvtx.annotate("Q_node", color="blue"):
+            Q_node = self.w_q_node(nodeData_dst) # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
+        # print(f"Q_node {Q_node.shape}") # Q_node torch.Size([7018, 100])
+        # print(f"Q_time {Q_time.shape}") # Q_time torch.Size([1, 100])
+
+        with nvtx.annotate("Q_time", color="blue"):
+            time_dst_unique = torch.ones([1, self.dim_time], dtype=torch.float, device="cuda") # 放弃更新bias
+            Q_time = self.w_q_time(time_dst_unique)
+
+        with nvtx.annotate("KV_node/edge/time", color="blue"):
+            Z_node = self.w_kv_node(nodeData_src) # TODO
+            Z_node_inverse = node_src_inverse
+            K_node = Z_node[:, :self.dim_out]
+            V_node = Z_node[:, self.dim_out:] # TODO 不一定要在这里把V算出来 显存换时间
+
+            Z_edge = self.w_kv_edge(efeat_unique)
+            Z_edge_inverse = efeat_inverse
+            K_edge = Z_edge[:, :self.dim_out]
+            V_edge = Z_edge[:, self.dim_out:]
+
+            Z_time = self.w_kv_time(time_unique)
+            Z_time_inverse = time_inverse
+            K_time = Z_time[:, :self.dim_out]
+            V_time = Z_time[:, self.dim_out:]
+        # print(f"Z_node {Z_node.shape}") # Z_node torch.Size([1175, 200])
+        # print(f"Z_node_inverse {Z_node_inverse.shape} {max(Z_node_inverse)}") # torch.Size([90180]) 1174
+        # print(f"Z_edge {Z_edge.shape}") # Z_edge torch.Size([8168, 200])
+        # print(f"Z_time {Z_time.shape}") # Z_time torch.Size([62723, 200])
+
+
+        ### fusion1
+        # A,B,C,D,E
+        # Q_node, Q_time, K_node, K_edge, K_time
+        # attn(x, y) 
+        # K_node[Z_node_inverse[x], y*50:(y+1)*50] + K_edge[Z_edge_inverse[x], y*50:(y+1)*50] + K_time[Z_time_inverse[x], y*50:(y+1)*50] shape(50, 1)
+        # Q_node[node_dst_inverse[x], y*50:(y+1)*50] + Q_time[0, y*50:(y+1)*50] shape(50, 1)
+        # 一个thread_block shared_mem 164KB 并行度 41000*float 1*SM(持有的资源, sharedmem和thread)
+        with nvtx.annotate("fusion_1", color="blue"):
+            attn = self.fusion_1(Q_node_idx, Q_node, Q_time, K_node, K_edge, K_time, Z_node_inverse, Z_edge_inverse, Z_time_inverse)
+
+        ### fusion2
+        # forward(self, num_src, reindex, m, attn, unique_node, unique_node_idx, unique_edge, unique_edge_idx, unique_time, unique_time_idx, reduce_idx) -> Tensor:
+        with nvtx.annotate("fusion_2", color="blue"):
+            # print(f"attn {attn.shape} {attn.is_contiguous()}")
+            # print(f"num_src {num_src}")
+            # print(f"reindex {reindex.shape} {reindex.is_contiguous()}")
+            # print(f"Z_node_inverse {Z_node_inverse.shape} {Z_node_inverse.is_contiguous()}")
+            # print(f"Z_edge_inverse {Z_edge_inverse.shape} {Z_edge_inverse.is_contiguous()}")
+            # print(f"Z_time_inverse {Z_time_inverse.shape} {Z_time_inverse.is_contiguous()}")
+            # torch.cuda.synchronize()
+            attn = torch_scatter.scatter_softmax(attn, reindex, dim=0, dim_size=num_src)
+            Z_node_inverse = Z_node_inverse.int()
+            Z_edge_inverse = Z_edge_inverse.int()
+            Z_time_inverse = Z_time_inverse.int()
+            # torch.cuda.synchronize()
+            out = FusedTGNFunction.apply(num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
+            # torch.cuda.synchronize()
+        
+        ## fusion2 消融
+        # with nvtx.annotate("edge_softmax", color="blue"):
+        #     attn = edge_softmax(blk, attn)  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        #     attn = self.dropout(attn)
+        # with nvtx.annotate("out and edge_reduce", color="blue"):
+        #     V = torch.index_select(V_node, 0, Z_node_inverse) + torch.index_select(V_edge, 0, Z_edge_inverse) + torch.index_select(V_time, 0, Z_time_inverse)
+        #     V = torch.reshape(V, (V.shape[0], self.num_heads, -1))
+        #     out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        #     out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):]
+        
+            
+        ### fusion3 w_out 我还能再融一次
+        with nvtx.annotate("fusion_3", color="blue"):
+            out = self.fusion_3(out, nodeData_dst, node_dst_inverse)
+        ## fusion3 消融
+        # with nvtx.annotate("else", color="blue"):
+        #     # blk.dstdata['h'] = torch.index_select(nodeData_dst, 0, node_dst_inverse)
+        #     dstdata_h = nodeData_dst[node_dst_inverse]
+        #     out = torch.cat([out, dstdata_h], dim=1)
+        #     out = self.w_out(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        #     out = torch.nn.functional.relu(self.dropout(out))
+        #     out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        return out
+
+class TemporalAttnLayer_1_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
+    def __init__(self, ctx: TContext, num_heads: int,
+                 dim_node: int, dim_edge: int, dim_time: int, dim_out: int, layer: int,
+                 dropout=0.1):
+        super().__init__()
+        assert (dim_out % num_heads == 0)
+        self.ctx = ctx
+        self.num_heads = num_heads
+        self.dim_edge = dim_edge
+        self.dim_out = dim_out
+        self.dim_time = dim_time
+        self.time_encode = TimeEncode(dim_time)
+        # 拆分后前反向的性能开销 TODO
+        self.w_q_node = torch.nn.Linear(dim_node, dim_out)
+        self.w_q_time = torch.nn.Linear(dim_time, dim_out)
+        self.w_kv_node = torch.nn.Linear(dim_node, dim_out * 2)
+        self.w_kv_edge = torch.nn.Linear(dim_edge, dim_out * 2)
+        self.w_kv_time = torch.nn.Linear(dim_time, dim_out * 2)
+        self.w_out = torch.nn.Linear(dim_node + dim_out, dim_out)
+        self.w_out_dstData = torch.nn.Linear(dim_node, dim_out)
+        self.w_out_edgerdc = torch.nn.Linear(dim_out, dim_out)
+        self.attn_act = torch.nn.LeakyReLU(0.2)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.layer_norm = torch.nn.LayerNorm(dim_out)
+        self.layer = layer
+
+    @torch.compile()
+    def fusion_precompute(self, layer, _unique_time_delta):
+        return precomputed_times(self.ctx, layer, self.time_encode, _unique_time_delta) # precompute是elementwise 理论上讲行不变
+
+    @torch.compile()
+    def fusion_1(self, Q_node_idx, Q_node, Q_time, K_node, K_edge, K_time, Z_node_inverse, Z_edge_inverse, Z_time_inverse):
+        # print(f"Q_node_idx {Q_node_idx.shape}")
+        # print(f"Q_node {Q_node.shape}")
+        # print(f"Q_time {Q_time.shape}")
+        # print(f"K_node {K_node.shape}")
+        # print(f"K_edge {K_edge.shape}")
+        # print(f"K_time {K_time.shape}")
+        # print(f"Z_node_inverse {Z_node_inverse.shape}")
+        # print(f"Z_edge_inverse {Z_edge_inverse.shape}")
+        # print(f"Z_time_inverse {Z_time_inverse.shape}")
+        
+        Q = torch.index_select(Q_node, 0, Q_node_idx) + Q_time.expand(len(Q_node_idx), -1)
+        K = torch.index_select(K_node, 0, Z_node_inverse) + torch.index_select(K_edge, 0, Z_edge_inverse) + torch.index_select(K_time, 0, Z_time_inverse)
+        Q = Q.reshape(Q.shape[0], self.num_heads, -1)
+        K = K.reshape(K.shape[0], self.num_heads, -1)
+        attn = torch.sum(Q * K, dim=2)
+        attn = self.attn_act(attn)
+        return attn
+    
+    def fusion_2(self, num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx):
+        out = FusedTGNFunction.apply(num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
+        return out
+    
+    @torch.compile()
+    def fusion_3(self, out, nodeData_dst, node_dst_inverse):
+        out_dstdata = self.w_out_dstData(nodeData_dst)
+        out_edgerdc = self.w_out_edgerdc(out)
+        out = torch.index_select(out_dstdata, 0, node_dst_inverse) + out_edgerdc
+        out = torch.nn.functional.relu(self.dropout(out))
+        out = self.layer_norm(out)
+        return out
+
+    @torch.compile()
+    def fusion_0(self, nfeat, mem, unique_dstnodes, unique_srcnodes):
+        nodeData = nfeat + mem
+        nodeData_dst = nodeData[unique_dstnodes]
+        nodeData_src = nodeData[unique_srcnodes]
+        return nodeData_dst, nodeData_src
+    
+    @torch.compile()
+    def fusion_0_1(self, output, b2_inv_idx, unique_dstnodes, unique_srcnodes):
+        nodeData_dst = output[b2_inv_idx][unique_dstnodes]
+        nodeData_src = output[b2_inv_idx][unique_srcnodes]
+        return nodeData_dst, nodeData_src
+
+    # ! 先以压缩为核心写kernel，即相同的只存储一次
+    def forward(self, num_src, num_dst, reduce_idx, reindex, Q_node_idx, output, b2_inv_idx, unique_dstnodes, node_dst_inverse, unique_srcnodes, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
+        # TODO _g_dstindex 可以进一步预处理
+        ## fusion0
+        with nvtx.annotate("fusion_0", color="blue"):
+            nodeData_dst, nodeData_src = self.fusion_0_1(output, b2_inv_idx, unique_dstnodes, unique_srcnodes)
+            # ## fusion0 消融
+            # nodeData_dst = output[b2_inv_idx][unique_dstnodes]
+            # nodeData_src = output[b2_inv_idx][unique_srcnodes]
+
         with nvtx.annotate("Q_node", color="blue"):
             Q_node = self.w_q_node(nodeData_dst) # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
         # print(f"Q_node {Q_node.shape}") # Q_node torch.Size([7018, 100])
@@ -622,7 +826,6 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         #     out = torch.nn.functional.relu(self.dropout(out))
         #     out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
         return out
-
 
 class TemporalAttnLayer0_2_perfCeil(torch.nn.Module):
     def __init__(self, ctx: TContext, num_heads: int,
