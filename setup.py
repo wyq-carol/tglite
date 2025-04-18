@@ -15,6 +15,7 @@ def main():
                     "lib/cache.cpp",
                     "lib/dedup.cpp",
                     "lib/sampler.cpp",
+                    "lib/sampler_unique.cpp",
                     "lib/tcsr.cpp",
                     "lib/utils.cpp"
                 ],

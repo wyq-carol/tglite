@@ -16,6 +16,7 @@ from .mymodule import LinearHandleZeroInput
 from tglite.gpu_mem_track import *
 from dgNN.src.tgn_kernel_fuse.test import FusedTGNFunction
 import torch_scatter
+import math
 
 def is_tensor_all_zeros(tensor):
     """
@@ -86,6 +87,100 @@ class TimeEncode(torch.nn.Module):
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
             return ans
 
+class LinearFunction_HandleZeroInput(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, weight, input_num, bias):
+        ctx.save_for_backward(weight)
+        return bias.view(1, -1).expand(input_num, -1)
+
+    @staticmethod
+    def backward(ctx, d_output):
+        weight = ctx.saved_tensors
+        return torch.zeros(weight[0].shape[0], 1, device="cuda:0"), None, None, None, None, None, None, None
+
+class LinearHandleZeroInput(torch.nn.Module):
+    def __init__(self, in_features: int, out_features: int, bias: bool = True):
+        super(LinearHandleZeroInput, self).__init__()
+        self.weight = torch.nn.Parameter(torch.empty((out_features, in_features)))
+        if bias:
+            self.bias = torch.nn.Parameter(torch.empty(out_features))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        torch.nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            torch.nn.init.uniform_(self.bias, -bound, bound)
+        
+    def forward(self, is_zero_tensor, input):
+        if is_zero_tensor == True:
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            ans = LinearFunction_HandleZeroInput.apply(self.weight, input, self.bias)
+            return ans
+        else:
+            # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
+            # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+            
+            # print(f"input {input.unsqueeze(-1).size()}")
+            # print(f"weight {self.weight.size()}")
+            with nvtx.annotate("TODO m*1*1*n", color="green"):
+                ans =  torch.nn.functional.linear(input.unsqueeze(-1), self.weight, self.bias)
+            return ans
+
+class TimeEncode_blkm(torch.nn.Module):
+    def __init__(self, dim_time: int):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.from_numpy(1 / 10 ** np.linspace(0, 9, dim_time)).float().reshape(dim_time, 1))
+        self.bias = torch.nn.Parameter(torch.zeros(dim_time).float())
+
+    def forward(self, ts: Tensor) -> Tensor:
+        with nvtx.annotate("time-encode non-zero", color="red"):
+            ans = torch.cos(torch.nn.functional.linear(ts.unsqueeze(-1), self.weight, self.bias))
+            return ans
+        
+class TimeEncode_blkm_zeroInput(torch.nn.Module):
+    __tg_builtin_encoder__ = True
+
+    def __init__(self, dim_time: int):
+        super().__init__()
+        self.w = LinearHandleZeroInput(1, dim_time)
+        self.w.weight = torch.nn.Parameter(torch
+            .from_numpy(1 / 10 ** np.linspace(0, 9, dim_time))
+            .float().reshape(dim_time, 1))
+        self.w.bias = torch.nn.Parameter(torch.zeros(dim_time).float())
+        self._z = torch.zeros(1).float()
+
+    def preload_zeros(self, view):
+        return self(view)
+
+    def zeros(self, size: int, device):
+        '''
+        Generates a tensor of zeros with the encoded time dimensionality.
+        
+        :param size:
+        :param device:
+        '''
+        # 在这等着我呢！
+        if self._z.device != torch.device(device):
+            self._z = self._z.to(device)
+        # expand does not allocate memory
+        view = self._z.expand(size)
+        return self(False, view)
+
+    def forward(self, is_zero_tensor, ts: Tensor) -> Tensor:
+        '''
+        Forward pass of the TimeEncode module. Encodes the input time stamps into a high-dimensional space.
+        
+        :param ts: input time stamps
+        '''
+        # here
+        with nvtx.annotate("time-encode zero", color="red"):
+            tmp = self.w(is_zero_tensor, ts) # TODO ts
+            ans = torch.cos(tmp)
+            return ans
 
 class TemporalAttnLayer_precompute(torch.nn.Module):
     # 统计一系列输入输出的shape
@@ -491,6 +586,54 @@ class TemporalAttnLayer_2_perfCeil(torch.nn.Module):
                 out = self.layer_norm(out) # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
         return out
 
+import torch
+from torch.autograd import Function
+import nvtx
+
+class CustomLinearFunctionAllOnes(Function):
+    @staticmethod
+    def forward(ctx, weight, bias=None):
+        with nvtx.annotate("custom-linear-fwd", color="blue"):
+            # 保存权重和偏置，用于反向传播
+            ctx.save_for_backward(weight, bias)
+            # 输入元素全为1，因此前向传播结果直接等于权重的列和加上偏置
+            output = weight.sum(dim=0)
+            if bias is not None:
+                output += bias
+            return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        with nvtx.annotate("custom-linear-bwd", color="blue"):
+            # 获取保存的权重和偏置
+            weight, bias = ctx.saved_tensors
+            # 计算权重的梯度
+            # print(f"grad_output {grad_output.shape}")
+            grad_weight = grad_output.unsqueeze(0).expand_as(weight)
+            # 计算偏置的梯度（如果有偏置）
+            grad_bias = grad_output if bias is not None else None
+            # print(f"grad_bias {grad_bias.shape}")
+            return grad_weight, grad_bias
+        
+# 自定义 Linear 层
+class CustomLinearAllOnes(torch.nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super(CustomLinearAllOnes, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = torch.nn.Parameter(torch.randn(out_features, in_features))
+        if bias:
+            self.bias = torch.nn.Parameter(torch.randn(out_features))
+        else:
+            self.register_parameter('bias', None)
+
+    def forward(self):
+        return CustomLinearFunctionAllOnes.apply(self.weight, self.bias)
+# 为自定义函数添加名字
+CustomLinearFunctionAllOnes.__name__ = "CustomLinearFunctionAllOnes"
+CustomLinearFunctionAllOnes.forward.__name__ = "CustomLinearFunctionAllOnes_forward"
+CustomLinearFunctionAllOnes.backward.__name__ = "CustomLinearFunctionAllOnes_backward"
+
 
 class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
     def __init__(self, ctx: TContext, num_heads: int,
@@ -503,10 +646,11 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         self.dim_edge = dim_edge
         self.dim_out = dim_out
         self.dim_time = dim_time
-        self.time_encode = TimeEncode(dim_time)
+        self.time_encode = TimeEncode_blkm(dim_time)
+        self.time_encode_zero = TimeEncode_blkm_zeroInput(dim_time)
         # 拆分后前反向的性能开销 TODO
         self.w_q_node = torch.nn.Linear(dim_node, dim_out)
-        self.w_q_time = torch.nn.Linear(dim_time, dim_out)
+        self.w_q_time = CustomLinearAllOnes(dim_time, dim_out)
         self.w_kv_node = torch.nn.Linear(dim_node, dim_out * 2)
         self.w_kv_edge = torch.nn.Linear(dim_edge, dim_out * 2)
         self.w_kv_time = torch.nn.Linear(dim_time, dim_out * 2)
@@ -519,8 +663,9 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         self.layer = layer
 
     @torch.compile
-    def fusion_precompute(self, layer, _unique_time_delta):
-        return precomputed_times(self.ctx, layer, self.time_encode, _unique_time_delta) # precompute是elementwise 理论上讲行不变
+    def fusion_precompute(self, _unique_time_delta): # TODO
+        return self.time_encode(_unique_time_delta)
+        # return precomputed_times(self.ctx, layer, self.time_encode, _unique_time_delta) # precompute是elementwise 理论上讲行不变
 
     @torch.compile
     def fusion_1(self, Q_node_idx, Q_node, Q_time, K_node, K_edge, K_time, Z_node_inverse, Z_edge_inverse, Z_time_inverse):
@@ -537,13 +682,19 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         return out
     
     @torch.compile
-    def fusion_3(self, out, nodeData_dst, node_dst_inverse):
-        out_dstdata = self.w_out_dstData(nodeData_dst)
-        out_edgerdc = self.w_out_edgerdc(out)
+    def fusion_3(self, out, out_dstdata, node_dst_inverse):
+        with nvtx.annotate("out_edgerdc", color="blue"):
+            out_edgerdc = self.w_out_edgerdc(out)
         out = torch.index_select(out_dstdata, 0, node_dst_inverse) + out_edgerdc
         out = torch.nn.functional.relu(self.dropout(out))
         out = self.layer_norm(out)
         return out
+        # out_dstdata = self.w_out_dstData(nodeData_dst)
+        # out_edgerdc = self.w_out_edgerdc(out)
+        # out = torch.index_select(out_dstdata, 0, node_dst_inverse) + out_edgerdc
+        # out = torch.nn.functional.relu(self.dropout(out))
+        # out = self.layer_norm(out)
+        # return out
 
     @torch.compile
     def fusion_0(self, nfeat, mem, unique_dstnodes, unique_srcnodes):
@@ -559,55 +710,63 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         return nodeData_dst, nodeData_src
 
     # ! 先以压缩为核心写kernel，即相同的只存储一次
-    def forward(self, num_src, num_dst, reduce_idx, reindex, Q_node_idx, nfeat, mem, unique_dstnodes, node_dst_inverse, unique_srcnodes, node_src_inverse, efeat_unique, efeat_inverse, _unique_time_delta, time_inverse) -> Tensor:
+    def forward(self, num_src, num_dst, reduce_idx, reindex, Q_node_idx, nfeat, mem, unique_dstnodes, node_dst_inverse, unique_srcnodes, Z_node_inverse, efeat_unique, Z_edge_inverse, _unique_time_delta, Z_time_inverse) -> Tensor:
         # TODO _g_dstindex 可以进一步预处理
         ## fusion0
-        with nvtx.annotate("fusion_0", color="blue"):
-            if self.layer == 0:
-                nodeData_dst, nodeData_src = self.fusion_0(nfeat, mem, unique_dstnodes, unique_srcnodes)
-                ## fusion0 消融
-                # nodeData = nfeat + mem
-                # nodeData_dst = nodeData[unique_dstnodes]
-                # nodeData_src = nodeData[unique_srcnodes]
-            else:
-                assert self.layer == 1
-                nodeData_dst, nodeData_src = self.fusion_0_1(nfeat, unique_dstnodes, unique_srcnodes)
+        # with nvtx.annotate("fusion_0", color="blue"):
+        #     if self.layer == 0:
+        #         nodeData_dst, nodeData_src = self.fusion_0(nfeat, mem, unique_dstnodes, unique_srcnodes)
+        #         ## fusion0 消融
+        #         # nodeData = nfeat + mem
+        #         # nodeData_dst = nodeData[unique_dstnodes]
+        #         # nodeData_src = nodeData[unique_srcnodes]
+        #     else:
+        #         assert self.layer == 1
+        #         nodeData_dst, nodeData_src = self.fusion_0_1(nfeat, unique_dstnodes, unique_srcnodes)
         
-        time_unique = self.fusion_precompute(self.layer, _unique_time_delta)
+        with nvtx.annotate("time_unique", color="blue"):
+            time_unique = self.fusion_precompute(_unique_time_delta)
 
-        # nodeData_src = nodeData_src.contiguous()
-        # nodeData_dst = nodeData_dst.contiguous()
-        # efeat_unique = efeat_unique.contiguous()
-        # time_unique = time_unique.contiguous()
-        # print(f"nodeData_dst {nodeData_dst.shape} {nodeData_dst.is_contiguous()}")
-        # print(f"nodeData_src {nodeData_src.shape} {nodeData_src.is_contiguous()}")
-        # print(f"efeat_unique {efeat_unique.shape} {efeat_unique.is_contiguous()}")
-        # print(f"time_unique  {time_unique.shape} {time_unique.is_contiguous()}")
-        
-        with nvtx.annotate("Q_node", color="blue"):
-            Q_node = self.w_q_node(nodeData_dst) # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
         # print(f"Q_node {Q_node.shape}") # Q_node torch.Size([7018, 100])
         # print(f"Q_time {Q_time.shape}") # Q_time torch.Size([1, 100])
+        with nvtx.annotate("add", color="blue"):
+            nodeData = nfeat + mem
+        with nvtx.annotate("nodeData_dst", color="blue"):
+            nodeData_dst = torch.index_select(nodeData, 0, unique_dstnodes)
+        with nvtx.annotate("nodeData_src", color="blue"):
+            nodeData_src = torch.index_select(nodeData, 0, unique_srcnodes)
 
-        with nvtx.annotate("Q_time", color="blue"):
-            time_dst_unique = torch.ones([1, self.dim_time], dtype=torch.float, device="cuda") # 放弃更新bias
-            Q_time = self.w_q_time(time_dst_unique)
-
-        with nvtx.annotate("KV_node/edge/time", color="blue"):
-            Z_node = self.w_kv_node(nodeData_src) # TODO
-            Z_node_inverse = node_src_inverse
-            K_node = Z_node[:, :self.dim_out]
-            V_node = Z_node[:, self.dim_out:] # TODO 不一定要在这里把V算出来 显存换时间
-
+        # print(f"nodeData_dst {nodeData_dst.shape}") torch.Size([8192, 128])
+        # print(f"efeat_unique {efeat_unique.shape}") torch.Size([32768, 128])
+        # print(f"time_unique {time_unique.shape}") torch.Size([32768, 128])
+        # print(f"nodeData_src {nodeData_src.shape}") torch.Size([8192, 128])
+        with nvtx.annotate("Q_node", color="blue"):
+            Q_node = self.w_q_node(nodeData_dst) # TODO 但是现在srcnode算的变多了，其实应该分开去重 -> 但矩阵乘的时间可以被pipeline掩盖/过于短的kernel对GPU而言也不友好，所以无所谓 -> 同一份nodeData 把两种W(三组W)拼在一起
+        with nvtx.annotate("KV_node", color="blue"):
             Z_edge = self.w_kv_edge(efeat_unique)
-            Z_edge_inverse = efeat_inverse
-            K_edge = Z_edge[:, :self.dim_out]
-            V_edge = Z_edge[:, self.dim_out:]
-
+        with nvtx.annotate("KV_edge", color="blue"):
             Z_time = self.w_kv_time(time_unique)
-            Z_time_inverse = time_inverse
-            K_time = Z_time[:, :self.dim_out]
-            V_time = Z_time[:, self.dim_out:]
+        with nvtx.annotate("KV_time", color="blue"):
+            Z_node = self.w_kv_node(nodeData_src) # TODO
+        with nvtx.annotate("nodeData_dst", color="blue"):
+            out_dstdata = self.w_out_dstData(nodeData_dst)
+        
+        with nvtx.annotate("Q_time", color="blue"): # TODO
+            # time_dst_unique = torch.ones([1, self.dim_time], dtype=torch.float, device="cuda") # 放弃更新bias
+            Q_time = self.w_q_time()
+        
+
+        # with nvtx.annotate("KV_node/edge/time-else", color="blue"):
+            # K_node = Z_node[:, :self.dim_out]
+            # V_node = Z_node[:, self.dim_out:] # TODO 不一定要在这里把V算出来 显存换时间
+
+            # K_edge = Z_edge[:, :self.dim_out]
+            # V_edge = Z_edge[:, self.dim_out:]
+
+            # K_time = Z_time[:, :self.dim_out]
+            # V_time = Z_time[:, self.dim_out:]
+        with nvtx.annotate("out-index-select"):
+            out = torch.index_select(out_dstdata, 0, node_dst_inverse)
         # print(f"Z_node {Z_node.shape}") # Z_node torch.Size([1175, 200])
         # print(f"Z_node_inverse {Z_node_inverse.shape} {max(Z_node_inverse)}") # torch.Size([90180]) 1174
         # print(f"Z_edge {Z_edge.shape}") # Z_edge torch.Size([8168, 200])
@@ -622,25 +781,20 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         # Q_node[node_dst_inverse[x], y*50:(y+1)*50] + Q_time[0, y*50:(y+1)*50] shape(50, 1)
         # 一个thread_block shared_mem 164KB 并行度 41000*float 1*SM(持有的资源, sharedmem和thread)
         with nvtx.annotate("fusion_1", color="blue"):
-            attn = self.fusion_1(Q_node_idx, Q_node, Q_time, K_node, K_edge, K_time, Z_node_inverse, Z_edge_inverse, Z_time_inverse)
+            # attn = self.fusion_1(Q_node_idx, Q_node, Q_time, K_node, K_edge, K_time, Z_node_inverse, Z_edge_inverse, Z_time_inverse)
+            attn = self.fusion_1(Q_node_idx, Q_node, Q_time, Z_node[:, :self.dim_out], Z_edge[:, :self.dim_out], Z_time[:, :self.dim_out], Z_node_inverse, Z_edge_inverse, Z_time_inverse)
 
         ### fusion2
         # forward(self, num_src, reindex, m, attn, unique_node, unique_node_idx, unique_edge, unique_edge_idx, unique_time, unique_time_idx, reduce_idx) -> Tensor:
-        with nvtx.annotate("fusion_2", color="blue"):
-            # print(f"attn {attn.shape} {attn.is_contiguous()}")
-            # print(f"num_src {num_src}")
-            # print(f"reindex {reindex.shape} {reindex.is_contiguous()}")
-            # print(f"Z_node_inverse {Z_node_inverse.shape} {Z_node_inverse.is_contiguous()}")
-            # print(f"Z_edge_inverse {Z_edge_inverse.shape} {Z_edge_inverse.is_contiguous()}")
-            # print(f"Z_time_inverse {Z_time_inverse.shape} {Z_time_inverse.is_contiguous()}")
-            # torch.cuda.synchronize()
-            attn = torch_scatter.scatter_softmax(attn, reindex, dim=0, dim_size=num_src)
+        with nvtx.annotate("to int", color="blue"):
             Z_node_inverse = Z_node_inverse.int()
             Z_edge_inverse = Z_edge_inverse.int()
             Z_time_inverse = Z_time_inverse.int()
-            # torch.cuda.synchronize()
-            out = FusedTGNFunction.apply(num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
-            # torch.cuda.synchronize()
+        with nvtx.annotate("scatter_softmax", color="blue"):
+            attn = torch_scatter.scatter_softmax(attn, reindex, dim=0, dim_size=num_src)
+        with nvtx.annotate("fusion_2", color="blue"):
+            # out = FusedTGNFunction.apply(num_dst, attn, V_node, Z_node_inverse, V_edge, Z_edge_inverse, V_time, Z_time_inverse, reduce_idx)
+            out = FusedTGNFunction.apply(num_dst, attn, Z_node[:, self.dim_out:], Z_node_inverse, Z_edge[:, self.dim_out:], Z_edge_inverse, Z_time[:, self.dim_out:], Z_time_inverse, reduce_idx)
         
         ## fusion2 消融
         # with nvtx.annotate("edge_softmax", color="blue"):
@@ -652,10 +806,12 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
         #     out = torch.reshape(V * attn[:, :, None], (V.shape[0], -1))  # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
         #     out = edge_reduce(blk, out, op='sum') # with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):]
         
-            
-        ### fusion3 w_out 我还能再融一次
+        
         with nvtx.annotate("fusion_3", color="blue"):
-            out = self.fusion_3(out, nodeData_dst, node_dst_inverse)
+            out = self.fusion_3(out, out_dstdata, node_dst_inverse)
+        ### fusion3 w_out 我还能再融一次
+        # with nvtx.annotate("fusion_3", color="blue"):
+        #     out = self.fusion_3(out, nodeData_dst, node_dst_inverse)
         ## fusion3 消融
         # with nvtx.annotate("else", color="blue"):
         #     # blk.dstdata['h'] = torch.index_select(nodeData_dst, 0, node_dst_inverse)

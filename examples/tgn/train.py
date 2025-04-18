@@ -9,7 +9,8 @@ from tgn import TGN
 import nvtx
 from tglite.gpu_mem_track import *
 import tglite.config
-from tglite.blockMgrsv4 import *
+from tglite.blockMgrsv5_1 import *
+# from tglite.blockMgrsv4 import *
 # from tglite.blockMgrs import *
 import pandas as pd
 from pathlib import Path
@@ -304,7 +305,9 @@ if __name__ == "__main__":
     ### training
 
     train_end, val_end = support.data_split(g.num_edges(), 0.7, 0.15)
+    # train_end, val_end = support.data_split(g.num_edges(), 0.001, 0.001)
     neg_sampler = lambda size: np.random.randint(0, g.num_nodes(), size)
+    # neg_sampler = lambda size: np.random.randint(0, size)
 
     trainer = support.LinkPredTrainer(
         ctx, model, criterion, optimizer, neg_sampler,
@@ -324,5 +327,5 @@ if __name__ == "__main__":
         draw_node_centric_skew(tglite.config.log_dir, tglite.config.log_name)
         get_samples(tglite.config.log_dir, tglite.config.log_name)
 
-    with nvtx.annotate("TEST", color="green"):
-        trainer.test()
+    # with nvtx.annotate("TEST", color="green"):
+    #     trainer.test()

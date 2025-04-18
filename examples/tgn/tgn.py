@@ -30,8 +30,8 @@ class TGN(nn.Module):
         self.dim_mail = 2 * self.dim_embed + self.dim_edge # self.dim_mail + self.dim_time == self.dim_mailbox
         self.dim_time = dim_time
         self.num_layers = num_layers
-        # self.nfeat_map = None if dim_node == dim_embed else nn.Linear(dim_node, dim_embed)
-        self.nfeat_map = nn.Linear(dim_node, dim_embed)
+        self.nfeat_map = None if dim_node == dim_embed else nn.Linear(dim_node, dim_embed)
+        # self.nfeat_map = nn.Linear(dim_node, dim_embed)
         self.mem_cell = GRUCell(2 * dim_embed + dim_edge + dim_time, dim_embed)
         self.mem_time_encode = tg.nn.TimeEncode(dim_time)
         if tglite.config.TEST_BLKM:

@@ -1,0 +1,3 @@
+[submodule "examples/refs/dgNN/dgNN/src/tgn_kernel_fuse"]
+	path = examples/refs/dgNN/dgNN/src/tgn_kernel_fuse
+	url = https://github.com/mkj77/tgn_kernel_fuse.git

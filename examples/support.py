@@ -265,7 +265,7 @@ class LinkPredTrainer(object):
         self.val_end = val_end
         self.model_path = model_path
         self.model_mem_path = model_mem_path
-        self.warmup_epochs = 1
+        self.warmup_epochs = 0
 
     def train(self):
         warmup_epochs = self.warmup_epochs
@@ -281,10 +281,6 @@ class LinkPredTrainer(object):
             #     get_mailbox_upd_batchs(tglite.config.log_dir, tglite.config.log_name)
             #     get_mailbox_upd_batchs_eval(tglite.config.log_dir, tglite.config.log_name)
             #     exit()
-
-            if e == 1 + warmup_epochs:
-                print("[TEST] torch.cuda.nvtx.range_push")
-                cuda.start_profiler()
 
             torch.cuda.synchronize()
             print("[epoch start]")
@@ -335,6 +331,10 @@ class LinkPredTrainer(object):
                             batch._nxt_neg_nodes = batch._neg_nodes
 
 
+                        if batch._b_id == 20 and e == 1 + warmup_epochs:
+                            print("[TEST] torch.cuda.nvtx.range_push")
+                            cuda.start_profiler()
+                        
                         if batch._b_id == 0:
                             if tglite.config.PERF_CEIL: # TODO only TGN
                                 self.model._init_samples0_2_perfCeil()
@@ -350,7 +350,7 @@ class LinkPredTrainer(object):
                             if (batch._b_id > 5):
 
                                 # 训练代码
-                                if batch._b_id == 6 and e == 1 + warmup_epochs:
+                                if batch._b_id == 26 and e == 1 + warmup_epochs:
                                     print("[TEST] torch.cuda.nvtx.range_pop")
                                     cuda.stop_profiler()
 
