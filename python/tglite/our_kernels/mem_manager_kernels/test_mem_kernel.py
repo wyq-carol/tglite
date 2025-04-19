@@ -290,7 +290,7 @@ class MemMailManager:
 
         # check for dump to cache
         with nvtx.annotate("check dump", color='orange'): 
-            mem_manager_kernels.dump_launcher(
+            dump_indices = mem_manager_kernels.dump_launcher(
                 self.max_idx,
                 self.mailbox_table,
                 up_mailbox_uniq,
@@ -298,8 +298,8 @@ class MemMailManager:
                 self.cache_ref,
                 self.data_ref,
                 # self.cache_table,
-                torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
-                
+                # torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
+                valid_indices
             )
             # drop_lines_mailbox = self.mailbox_table[up_mailbox_uniq]
             # mask = drop_lines_mailbox >= 0
@@ -318,9 +318,9 @@ class MemMailManager:
             # self.data_ref[non_cached_indices] -= non_cached_counts
             # self.cache_ref[cached_indices] -= cached_counts
             
-            with nvtx.annotate("sort", color='blue'): 
-                valid_indices = torch.sort(valid_indices).values
-            dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
+            # with nvtx.annotate("sort", color='blue'): 
+            #     valid_indices = torch.sort(valid_indices).values
+            # dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
             with nvtx.annotate("unique2", color='blue'): 
                 unique, counts = torch.unique(torch.cat((up_mailbox_nbr, up_mailbox_uniq)), return_counts=True)        
             self.data_ref[unique] += counts
@@ -343,9 +343,13 @@ class MemMailManager:
         
     def check_data_valid(self, indices: torch.Tensor) -> torch.Tensor:
         """ check if indices are valid , return invalid indices """
-        valid = self.data_status[indices]
-        invalid = indices[~valid]
-        valid = indices[valid]
+        # valid = self.data_status[indices]
+        # invalid = indices[~valid]
+        # valid = indices[valid]
+        invalid, valid = mem_manager_kernels.check_data_valid(
+            indices,
+            self.data_status
+        )
         return invalid, valid
     
     def alloc_for_batch(self, indices: torch.Tensor):
@@ -360,12 +364,17 @@ class MemMailManager:
             
             # return
         # Step 2 : alloc for indices
+        
         alloc = free_spaces[:indices.size(0)]
-        self.space_status[alloc[:, 0], alloc[:, 1]] = True
+        # self.space_status[alloc[:, 0], alloc[:, 1]] = True
         
-        self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]
+        # self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]
         
-        free_spaces = self.free_spaces()
+        mem_manager_kernels.launch_allocate_space_kernel(
+            alloc, indices, self.space_status, self.space_table, self.data_table, self.num_slots_per_block
+        )
+
+        # free_spaces = self.free_spaces()
         # print(f"free spaces: {free_spaces.size(0)}, indices: {indices.size(0)}")
          
         
@@ -504,7 +513,7 @@ if __name__ == "__main__":
     uniq = torch.tensor([1, 2], dtype=torch.int32, device='cuda')
     nbr = torch.tensor([5, 6], dtype=torch.int32, device='cuda')
     cache_ref = torch.tensor([0, 1, 1, 1, 0, 0, 0, 0], dtype=torch.int32, device='cuda')
-    data_ref = torch.tensor([1, 1, 1, 1, 0, 0, 0, 0], dtype=torch.int32, device='cuda')
+    data_ref = torch.tensor([1, 1, 1, 0, 0, 0, 0, 0], dtype=torch.int32, device='cuda')
     extract = mem_manager_kernels.dump_launcher(
         6,
         mailbox,
@@ -512,7 +521,7 @@ if __name__ == "__main__":
         nbr,
         cache_ref,
         data_ref,
-        torch.tensor([0, 1], dtype=torch.int32, device='cuda'),
+        torch.tensor([0], dtype=torch.int32, device='cuda'),
     )
     print(extract)
     print(data_ref)

@@ -12,6 +12,7 @@ build/
 
 docs/_build/
 
+examples/core
 examples/data
 examples/models/
 examples/out-*.csv

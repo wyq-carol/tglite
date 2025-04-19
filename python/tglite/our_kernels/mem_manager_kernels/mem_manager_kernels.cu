@@ -394,12 +394,14 @@ __global__ void extract_rows_kernel(
 }
 
 std::pair<thrust::device_vector<int>, thrust::device_vector<int>> unique_with_count_from_vec(
-    thrust::device_vector<int>& input_vec
+    // thrust::device_vector<int>& input_vec
+    thrust::device_ptr<int> dev_ptr, int N
 ) {
-    int N = input_vec.size();
+    // int N = input_vec.size();
 
     // sort
-    thrust::sort(thrust::device, input_vec.begin(), input_vec.end());
+    // thrust::sort(thrust::device, input_vec.begin(), input_vec.end());
+    thrust::sort(thrust::device, dev_ptr, dev_ptr + N);
 
     // output vectors
     thrust::device_vector<int> uniq_vec(N);
@@ -407,8 +409,8 @@ std::pair<thrust::device_vector<int>, thrust::device_vector<int>> unique_with_co
 
     auto new_end = thrust::reduce_by_key(
         thrust::device,
-        input_vec.begin(),
-        input_vec.end(),
+        dev_ptr,
+        dev_ptr + N,
         thrust::make_constant_iterator(1),
         uniq_vec.begin(),
         count_vec.begin()
@@ -448,6 +450,38 @@ __global__ void pre_ref_update_kernel(
 
 }
 
+
+__global__ void make_mask_kernel(
+    const int* __restrict__ valid_indices,
+    const int* __restrict__ data_ref,
+    int* __restrict__ mask,
+    int N)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= N) return;
+
+    int idx = valid_indices[tid];
+    mask[tid] = (data_ref[idx] > 0) ? 1 : 0;
+}
+
+
+__global__ void fill_output_kernel(
+    const int* __restrict__ valid_indices,
+    const int* __restrict__ mask,
+    const int* __restrict__ prefix,
+    int* __restrict__ output,
+    int N)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= N) return;
+
+    if (mask[tid]) {
+        int out_idx = prefix[tid];
+        output[out_idx] = valid_indices[tid];
+    }
+}
+
+
 torch::Tensor dump_launcher(
     int Nid,
     torch::Tensor old_mailbox,
@@ -462,19 +496,24 @@ torch::Tensor dump_launcher(
     int D = old_mailbox.size(1);
     auto options = torch::TensorOptions().dtype(torch::kInt32).device(old_mailbox.device());
 
-    thrust::device_vector<int> extracted_rows(num_rows * 2);
+    auto extracted_rows_torch = torch::zeros({num_rows * 2}, options);
+    int* raw_ptr = extracted_rows_torch.data_ptr<int>();
+    // thrust::device_vector<int> extracted_rows();
+    int64_t size = num_rows * 2;
+    thrust::device_ptr<int> dev_ptr(raw_ptr);
 
     int threads = 256;
-    int blocks  = (num_rows + threads - 1) / threads;
+    int blocks  = (num_rows * 2 + threads - 1) / threads;
     extract_rows_kernel<<<blocks, threads>>>(
         uniq.data_ptr<int>(),
         old_mailbox.data_ptr<int>(),
-        thrust::raw_pointer_cast(extracted_rows.data()),
+        // thrust::raw_pointer_cast(extracted_rows.data()),
+        raw_ptr,
         num_rows, D
     );
     cudaDeviceSynchronize();
 
-    auto [uniq_vec, count_vec] = unique_with_count_from_vec(extracted_rows);
+    auto [uniq_vec, count_vec] = unique_with_count_from_vec(dev_ptr, size);
 
     blocks  = ((int)uniq_vec.size() + threads - 1) / threads;
     pre_ref_update_kernel<<<blocks, threads>>>(
@@ -486,12 +525,208 @@ torch::Tensor dump_launcher(
         Nid, (int)uniq_vec.size()
     );
 
+    // preform valid_indices sort
+    int N = valid_indicies.size(0);
+    if (N == 0) {
+        return torch::empty({0}, options);
+    }
+    
 
-    torch::Tensor out_uniq = torch::empty({(int)uniq_vec.size()}, options);
+    thrust::device_ptr<int> ptr = thrust::device_pointer_cast(valid_indicies.data_ptr<int>());
+    thrust::sort(thrust::device, ptr, ptr + valid_indicies.size(0));
 
-    cudaMemcpy(out_uniq.data_ptr<int>(), thrust::raw_pointer_cast(uniq_vec.data()), out_uniq.numel() * sizeof(int), cudaMemcpyDeviceToDevice);
+    auto mask   = torch::empty({N}, options);
+    auto prefix = torch::empty({N}, options);
+
+    blocks = (N + threads - 1) / threads;
+
+    make_mask_kernel<<<blocks, threads>>>(
+        valid_indicies.data_ptr<int>(),
+        data_ref.data_ptr<int>(),
+        mask.data_ptr<int>(),
+        N
+    );
+
+    // prefix sum
+    thrust::device_ptr<int> mask_ptr(mask.data_ptr<int>());
+    thrust::device_ptr<int> prefix_ptr(prefix.data_ptr<int>());
+    thrust::exclusive_scan(thrust::device, mask_ptr, mask_ptr + N, prefix_ptr);
+
+    // int total = mask_ptr[N - 1] + prefix_ptr[N - 1];  // 最后一个位置
+    int last_mask = 0, last_prefix = 0;
+    cudaMemcpy(&last_mask,   mask.data_ptr<int>()   + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&last_prefix, prefix.data_ptr<int>() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    int total = last_mask + last_prefix;
+    if (total == 0) {
+        auto out = torch::empty({0}, options);
+        return out;
+    }
+
+    auto output = torch::empty({total}, options);
+
+    fill_output_kernel<<<blocks, threads>>>(
+        valid_indicies.data_ptr<int>(),
+        mask.data_ptr<int>(),
+        prefix.data_ptr<int>(),
+        output.data_ptr<int>(),
+        N
+    );
+
+    return output;
+
+    // torch::Tensor out_uniq = torch::empty({(int)uniq_vec.size()}, options);
+
+    // cudaMemcpy(out_uniq.data_ptr<int>(), thrust::raw_pointer_cast(uniq_vec.data()), out_uniq.numel() * sizeof(int), cudaMemcpyDeviceToDevice);
 
 
 
-    return out_uniq;
+    // return out_uniq;
+}
+
+__global__ void check_valid_kernel(
+    const int* indices,
+    const bool* data_status,
+    int* valid_mask,
+    int* invalid_mask,
+    int N
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    bool status = data_status[indices[i]];
+    valid_mask[i] = status ? 1 : 0;
+    invalid_mask[i] = status ? 0 : 1;
+}
+
+
+std::tuple<torch::Tensor, torch::Tensor> check_data_valid(
+    torch::Tensor indices,
+    torch::Tensor data_status
+) {
+    TORCH_CHECK(indices.dtype() == torch::kInt32, "indices must be int32");
+    TORCH_CHECK(data_status.dtype() == torch::kBool, "data_status must be bool");
+    TORCH_CHECK(indices.is_cuda() && data_status.is_cuda(), "must be CUDA tensors");
+
+    int N = indices.size(0);
+    auto options = indices.options();
+
+    if (N == 0) {
+        return {
+            torch::empty({0}, options),
+            torch::empty({0}, options)
+        };
+    }
+
+    // Allocate masks and prefix
+    auto valid_mask   = torch::empty({N}, torch::dtype(torch::kInt32).device(indices.device()));
+    auto invalid_mask = torch::empty({N}, torch::dtype(torch::kInt32).device(indices.device()));
+    auto valid_prefix   = torch::empty({N}, valid_mask.options());
+    auto invalid_prefix = torch::empty({N}, valid_mask.options());
+
+    const int threads = 256;
+    const int blocks = (N + threads - 1) / threads;
+
+    check_valid_kernel<<<blocks, threads>>>(
+        indices.data_ptr<int>(),
+        data_status.data_ptr<bool>(),
+        valid_mask.data_ptr<int>(),
+        invalid_mask.data_ptr<int>(),
+        N
+    );
+
+    // Prefix sum
+    thrust::device_ptr<int> vmask_ptr(valid_mask.data_ptr<int>());
+    thrust::device_ptr<int> imask_ptr(invalid_mask.data_ptr<int>());
+    thrust::device_ptr<int> vprefix_ptr(valid_prefix.data_ptr<int>());
+    thrust::device_ptr<int> iprefix_ptr(invalid_prefix.data_ptr<int>());
+
+    thrust::exclusive_scan(thrust::device, vmask_ptr, vmask_ptr + N, vprefix_ptr);
+    thrust::exclusive_scan(thrust::device, imask_ptr, imask_ptr + N, iprefix_ptr);
+
+    // Count valid and invalid
+    int valid_total, invalid_total;
+    int last_valid_mask, last_invalid_mask;
+    cudaMemcpy(&valid_total, vprefix_ptr.get() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&invalid_total, iprefix_ptr.get() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&last_valid_mask, valid_mask.data_ptr<int>() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&last_invalid_mask, invalid_mask.data_ptr<int>() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    valid_total += last_valid_mask;
+    invalid_total += last_invalid_mask;
+
+    auto valid_out = torch::empty({valid_total}, options);
+    auto invalid_out = torch::empty({invalid_total}, options);
+
+    // Fill outputs
+    fill_output_kernel<<<blocks, threads>>>(
+        indices.data_ptr<int>(),
+        valid_mask.data_ptr<int>(),
+        valid_prefix.data_ptr<int>(),
+        valid_out.data_ptr<int>(),
+        N
+    );
+
+    fill_output_kernel<<<blocks, threads>>>(
+        indices.data_ptr<int>(),
+        invalid_mask.data_ptr<int>(),
+        invalid_prefix.data_ptr<int>(),
+        invalid_out.data_ptr<int>(),
+        N
+    );
+
+    return {invalid_out, valid_out};
+}
+
+
+__global__ void allocate_space_kernel(
+    const int* alloc,         // shape (N, 2)
+    const int* indices,       // shape (N,)
+    bool* space_status,       // shape (num_blocks * num_slots_per_block)
+    const int* space_table,   // shape (num_blocks * num_slots_per_block)
+    int* data_table,          // shape (任意大)
+    int num_slots_per_block,
+    int N
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    int block_id = alloc[2 * i + 0];
+    int slot_id  = alloc[2 * i + 1];
+    int flat_idx = block_id * num_slots_per_block + slot_id;
+
+    // 修改 space_status[block_id][slot_id] = true
+    space_status[flat_idx] = true;
+
+    // 赋值 data_table[indices[i]] = space_table[flat_idx]
+    data_table[indices[i]] = space_table[flat_idx];
+}
+
+void launch_allocate_space_kernel(
+    torch::Tensor alloc,         // int32 [N, 2]
+    torch::Tensor indices,       // int32 [N]
+    torch::Tensor space_status,  // bool [num_blocks, num_slots]
+    torch::Tensor space_table,   // int32 [num_blocks * num_slots]
+    torch::Tensor data_table,    // int32
+    int num_slots_per_block
+) {
+    TORCH_CHECK(alloc.dtype() == torch::kInt32 && alloc.dim() == 2 && alloc.size(1) == 2, "alloc must be (N, 2) int32");
+    TORCH_CHECK(indices.dtype() == torch::kInt32 && indices.dim() == 1, "indices must be (N,) int32");
+    TORCH_CHECK(space_status.dtype() == torch::kBool && space_status.dim() == 2, "space_status must be bool 2D");
+    TORCH_CHECK(space_table.dtype() == torch::kInt32, "space_table must be int32");
+    TORCH_CHECK(data_table.dtype() == torch::kInt32, "data_table must be int32");
+
+    int N = indices.size(0);
+    TORCH_CHECK(alloc.size(0) >= N, "alloc rows must >= indices size");
+
+    int threads = 256;
+    int blocks = (N + threads - 1) / threads;
+
+    allocate_space_kernel<<<blocks, threads>>>(
+        alloc.data_ptr<int>(),
+        indices.data_ptr<int>(),
+        space_status.data_ptr<bool>(),
+        space_table.data_ptr<int>(),
+        data_table.data_ptr<int>(),
+        num_slots_per_block,
+        N
+    );
 }
