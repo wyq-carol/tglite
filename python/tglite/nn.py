@@ -14,7 +14,7 @@ from .op import precomputed_zeros, precomputed_times, edge_reduce, edge_view, ed
 import nvtx
 from .mymodule import LinearHandleZeroInput
 from tglite.gpu_mem_track import *
-from dgNN.src.tgn_kernel_fuse.test import FusedTGNFunction
+from tglite.our_kernels.tgn_kernel_fuse.test import FusedTGNFunction
 import torch_scatter
 import math
 

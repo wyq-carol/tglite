@@ -1,103 +1,23 @@
+#######################################################
+#
+#  UPDATE LOG:
+#  version5 edition0 triton kernels added
+#  version5 edition1 fixed ref bugs 
+#  version6 edition0 turned to cuda kernels
+#  version6 edition1 cleanup codes
+#  version6 edition2 add update mem kernels
+#
+#
+#
+########################################################                             
+
+
 import torch
 import math
-import time
 import nvtx
-import triton
 import triton.language as tl
+import tglite.our_kernels.mem_manager_kernels.mem_manager as mem_manager_kernels
 
-import os
-import sys
-this_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(this_dir, '../../examples/refs/dgNN/dgNN/src/get_feat'))
-sys.path.append(os.path.join(this_dir, '../../examples/refs/dgNN/dgNN/src/concat_mail'))
-import get_feat
-import concat_mail
-
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_DIM": 32}, num_warps=2),
-        triton.Config({"BLOCK_DIM": 64}, num_warps=2),
-        triton.Config({"BLOCK_DIM": 128}, num_warps=4),
-    ],
-    key=["dim"]
-)
-@triton.jit
-def get_mem_data_kernel(
-    indices_ptr,            # [N]
-    data_status_ptr,        # [total_data_num] int32
-    data_table_ptr,         # [total_data_num, 2]
-    memory_ptr,             # [memory_size, dim]
-    output_ptr,             # [N, dim]
-    num_slots_per_block: tl.constexpr,
-    dim: tl.constexpr,
-    stride_dt_row: tl.constexpr,  # data_table.stride(0)
-    stride_dt_col: tl.constexpr,  # data_table.stride(1) 
-    stride_mem_row: tl.constexpr,
-    stride_out_row: tl.constexpr,
-    BLOCK_DIM: tl.constexpr,
-):
-    pid_n = tl.program_id(0)  # 当前行
-    pid_d = tl.program_id(1)  # 特征维度块索引
-
-    d = pid_d * BLOCK_DIM + tl.arange(0, BLOCK_DIM)
-    d_mask = d < dim
-
-    index = tl.load(indices_ptr + pid_n)
-    if index < 0:
-        return
-
-    valid = tl.load(data_status_ptr + index).to(tl.int1)
-
-    block_id = tl.load(data_table_ptr + index * stride_dt_row + 0 * stride_dt_col)
-    slot_id  = tl.load(data_table_ptr + index * stride_dt_row + 1 * stride_dt_col)
-
-    block_id = block_id.to(tl.int64)
-    pos = block_id * num_slots_per_block + slot_id
-    mem_offset = pos * stride_mem_row + d
-    out_offset = pid_n * stride_out_row + d
-
-    if pos < 0 or not valid:
-        val = d * 0.0
-    else:
-        val = tl.load(memory_ptr + mem_offset, mask=d_mask, other=0)
-    tl.store(output_ptr + out_offset, val, mask=d_mask)
-
-import triton
-import triton.language as tl
-
-@triton.jit
-def gather_memory_kernel(
-    indices_ptr,           # [N]
-    data_table_ptr,        # [total_data_num, 2]
-    memory_ptr,            # [memory_size, dim]
-    output_ptr,            # [N, dim]
-    num_slots: tl.constexpr,
-    dim: tl.constexpr,
-    stride_dt_row: tl.constexpr,
-    stride_dt_col: tl.constexpr,
-    stride_mem_row: tl.constexpr,
-    stride_out_row: tl.constexpr,
-    BLOCK_DIM: tl.constexpr,
-):
-    pid_n = tl.program_id(0)  # 当前行索引
-    pid_d = tl.program_id(1)  # 特征维度块索引
-
-    d = pid_d * BLOCK_DIM + tl.arange(0, BLOCK_DIM)
-    d_mask = d < dim
-
-    index = tl.load(indices_ptr + pid_n)
-
-    # 取出 block_id 和 slot_id
-    block_id = tl.load(data_table_ptr + index * stride_dt_row + 0 * stride_dt_col)
-    slot_id  = tl.load(data_table_ptr + index * stride_dt_row + 1 * stride_dt_col)
-    block_id = block_id.to(tl.int64)
-    pos = block_id * num_slots + slot_id
-
-    mem_offset = pos * stride_mem_row + d
-    out_offset = pid_n * stride_out_row + d
-
-    val = tl.load(memory_ptr + mem_offset, mask=d_mask, other=0)
-    tl.store(output_ptr + out_offset, val, mask=d_mask)
 
 
 class BlockPool:
@@ -185,90 +105,10 @@ class BlockManager:
         
         new_status = torch.zeros((free_blocks.size(0), self.num_slots), dtype=torch.bool, device=self.pool.device)
         self.space_status = torch.cat((self.space_status, new_status), dim=0)
-
-    @torch.compile
-    def get_data_batch_ori(self, indices: torch.Tensor) -> torch.Tensor:
-        """ if there is possiblity to load data not in buffer, use sorce_tensor to load data """
-        # 找出 -1 的位置
-        mask_neg1 = (indices == -1)
-        # 找出不是 -1 的有效索引
-        valid_indices = indices[~mask_neg1]
-        # 检查这些有效索引中有没有尚未加载的（即 data_status 为 False）
-        invalid_indices = valid_indices[~self.data_status[valid_indices]]
-        if invalid_indices.size(0) > 0:
-            if self.source_tensor is not None:
-                self.copy_from_cpu_batch(invalid_indices)
-            else:
-                print(f"STRANGE: no source tensor, cannot load data")
-                return None
-        
-        # 从 data_table 和 memory 中提取
-        info = torch.zeros((indices.size(0), 2), dtype=torch.int32, device=indices.device)
-        info[~mask_neg1] = self.data_table[valid_indices]
-
-        pos = info[:, 0] * self.num_slots + info[:, 1]
-
-        data_copy = torch.zeros((indices.size(0), self.memory.size(1)), dtype=self.memory.dtype, device=self.memory.device)
-        data_copy[~mask_neg1] = self.memory[pos[~mask_neg1]]
-        return data_copy
-    
-    # def get_data_batch(self, indices: torch.Tensor) -> torch.Tensor:
-    #     """ if there is possiblity to load data not in buffer, use sorce_tensor to load data """
-    #     # 找出 -1 的位置
-    #     mask_neg1 = (indices == -1)
-    #     # 找出不是 -1 的有效索引
-    #     valid_indices = indices[~mask_neg1]
-    #     # 从 data_table 和 memory 中提取
-    #     info = torch.zeros((indices.size(0), 2), dtype=torch.int32, device=indices.device)
-    #     info[~mask_neg1] = self.data_table[valid_indices]
-
-    #     pos = info[:, 0] * self.num_slots + info[:, 1]
-
-    #     data_copy = torch.zeros((indices.size(0), self.memory.size(1)), dtype=self.memory.dtype, device=self.memory.device)
-    #     data_copy[~mask_neg1] = self.memory[pos[~mask_neg1]]
-    #     return data_copy
     
     def get_data_batch(self, indices: torch.Tensor) -> torch.Tensor:
-        return get_feat.get_feat(self.num_slots, indices, self.data_table, self.memory)
+        return mem_manager_kernels.get_feat_data(self.num_slots, indices, self.data_table, self.memory)
     
-    # @torch.compile
-    #TODO: nfeat efeat
-    # def get_data_batch(self, indices: torch.Tensor) -> torch.Tensor:
-    #     """ if there is possiblity to load data not in buffer, use sorce_tensor to load data """
-    #     # info = self.data_table[indices]
-    #     # pos = info[:, 0] * self.num_slots + info[:, 1]
-    #     # data_copy = self.memory[pos]
-    #     with nvtx.annotate("get_data_batch inner"):
-    #         BLOCK_DIM = 64
-    #         N, dim = indices.shape[0], self.memory.shape[1]
-
-    #         grid = lambda meta: (N, (dim + meta['BLOCK_DIM'] - 1) // meta['BLOCK_DIM'])
-
-    #         # if self.feature_size == 172:
-    #         #     torch.save(self.data_table, "/home/tglite/examples/refs/dgNN/dgNN/src/get_feat/data_table.pt")
-    #         #     torch.save(indices, "/home/tglite/examples/refs/dgNN/dgNN/src/get_feat/indices.pt")
-    #         #     torch.save(self.memory, "/home/tglite/examples/refs/dgNN/dgNN/src/get_feat/memory.pt")
-    #         #     torch.save(self.num_slots, "/home/tglite/examples/refs/dgNN/dgNN/src/get_feat/num_slots.pt")
-    #         #     exit()
-
-    #         output_tensor = torch.empty((indices.shape[0], dim), device=self.memory.device)
-    #         with nvtx.annotate("get_data_batch kernal"):
-    #             gather_memory_kernel[grid](
-    #                 indices,
-    #                 self.data_table,
-    #                 self.memory,
-    #                 output_tensor,  # torch.empty((N, dim), device=...)
-    #                 num_slots=self.num_slots,
-    #                 dim=dim,
-    #                 stride_dt_row=self.data_table.stride(0),
-    #                 stride_dt_col=self.data_table.stride(1),
-    #                 stride_mem_row=self.memory.stride(0),
-    #                 stride_out_row=output_tensor.stride(0),
-    #                 BLOCK_DIM=BLOCK_DIM
-    #             )
-    #     return output_tensor
-    
-
     def update_data_batch(self, indices: torch.Tensor, data: torch.Tensor):
         """ set data in batch """
         invalid_indices = self.check_data_valid(indices)
@@ -296,7 +136,6 @@ class BlockManager:
             # print(f"free spaces: {free_spaces.size(0)}, indices: {indices.size(0)}")
             self.resize(indices.size(0))
             free_spaces = self.free_spaces()
-            
             # return
         # Step 2 : alloc for indices
         alloc = free_spaces[:indices.size(0)]
@@ -354,7 +193,8 @@ class MemMailManager:
         self.num_slots_per_block = pool.block_elements // feature_size
         self.num_blocks_got = init_blocks
         self.max_idx = max_idx
-        self.cache_table_len = blocks_for_cache * self.num_slots_per_block
+        # self.cache_table_len = blocks_for_cache * self.num_slots_per_block
+        self.cache_table_len = 2*max_idx
 
         
         # latest data table (N , 2), True mains valid
@@ -369,8 +209,6 @@ class MemMailManager:
         
         # mailbox table, should be putted on gpu all, so no status
         self.mailbox_table = torch.full((self.max_idx, 2), -1, dtype=torch.int32, device=pool.device)
-        # self.cache_mask = torch.zeros((self.max_idx, 2), dtype=torch.bool, device=pool.device)
-        # self.mailbox_status = torch.zeros(self.max_idx, dtype=torch.bool, device=pool.device)
         
         # a space table (block num , slot num per block), True mains used        
         free_blocks = pool.allocate_block(self.num_blocks_got)
@@ -427,57 +265,17 @@ class MemMailManager:
         
         new_status = torch.zeros((free_blocks.size(0), self.num_slots_per_block), dtype=torch.bool, device=self.pool.device)
         self.space_status = torch.cat((self.space_status, new_status), dim=0)
-
-
-    def get_mem_data_ori(self, indices: torch.Tensor) -> torch.Tensor:
-        """ 现在没有实现CPU交换, 请确保数据都在GPU上且有效(第0轮更新前的初始数据被全部视为无效) """
-        # 找出 -1 的位置
-        mask_neg1 = (indices == -1)
-        # 找出不是 -1 的有效索引
-        valid_indices = indices[~mask_neg1]
-        # 检查这些有效索引中有没有尚未加载的（即 data_status 为 False）
-        invalid_indices = valid_indices[~self.data_status[valid_indices]]
-        if invalid_indices.size(0) > 0:
-            # print(f"STRANGE : invalid indices: {invalid_indices}")  
-            return None
-        # 从 data_table 和 memory 中提取
-        info = torch.zeros((indices.size(0), 2), dtype=torch.int32, device=indices.device)
-        info[~mask_neg1] = self.data_table[valid_indices]
-        pos = info[:, 0] * self.num_slots_per_block + info[:, 1]
-        data_copy = torch.zeros((indices.size(0), self.memory.size(1)), dtype=self.memory.dtype, device=self.memory.device)
-        data_copy[~mask_neg1] = self.memory[pos[~mask_neg1]]
-
-        return data_copy
     
     
     def get_mem_data(self, indices: torch.Tensor) -> torch.Tensor:
         with nvtx.annotate("get mem", color="purple"):
-            assert indices.device.type == "cuda"
-            N = indices.shape[0]
-            dim = self.memory.shape[1]
-
-            output = torch.empty((N, dim), dtype=self.memory.dtype, device=indices.device)
-
-            grid = lambda meta: (
-                N,
-                triton.cdiv(dim, meta["BLOCK_DIM"]),
-            )
-
-            
-            get_mem_data_kernel[grid](
-                indices_ptr=indices,  # shape [N]
-                data_status_ptr=self.data_status.to(torch.int8),  # shape [total_data_num]
-                data_table_ptr=self.data_table,  # shape [total_data_num, 2]
-                memory_ptr=self.memory,          # shape [memory_size, dim]
-                output_ptr=output,               # shape [N, dim]
-                num_slots_per_block=self.num_slots_per_block,
-                dim=dim,
-                stride_dt_row=2,
-                stride_dt_col=1,  
-                stride_mem_row=self.memory.stride(0),
-                stride_out_row=self.memory.stride(0),
-            )
-                
+            return mem_manager_kernels.get_mem_data(
+                self.num_slots_per_block,
+                indices,
+                self.data_table,
+                self.data_status,
+                self.memory,
+            ) 
             
         return output
 
@@ -491,42 +289,40 @@ class MemMailManager:
             self.data_status[invalid_indices] = True
 
         # check for dump to cache
-        if (up_mailbox_uniq == None):
+        with nvtx.annotate("check dump", color='orange'): 
+            mem_manager_kernels.dump_launcher(
+                self.max_idx,
+                self.mailbox_table,
+                up_mailbox_uniq,
+                up_mailbox_nbr,
+                self.cache_ref,
+                self.data_ref,
+                # self.cache_table,
+                torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
+            )
+            
+            with nvtx.annotate("sort", color='blue'): 
+                valid_indices = torch.sort(valid_indices).values
             dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
-        else:            
-            drop_lines_mailbox = self.mailbox_table[up_mailbox_uniq]
-            mask = drop_lines_mailbox >= 0
-            filtered = drop_lines_mailbox[mask]
-            unique, counts = torch.unique(filtered, return_counts=True)
-            
-            mask_valid = unique < self.max_idx
-            non_cached_indices = unique[mask_valid]
-            non_cached_counts = counts[mask_valid]
-
-            cached_indices = unique[~mask_valid] - self.max_idx
-            cached_counts = counts[~mask_valid]
-            
-            self.data_ref[non_cached_indices] -= non_cached_counts
-            self.cache_ref[cached_indices] -= cached_counts
-            
-            
-            
-            dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
-            unique, counts = torch.unique(torch.cat((up_mailbox_nbr, up_mailbox_uniq)), return_counts=True)        
+            with nvtx.annotate("unique2", color='blue'): 
+                unique, counts = torch.unique(torch.cat((up_mailbox_nbr, up_mailbox_uniq)), return_counts=True)        
             self.data_ref[unique] += counts
 
-        self.dump_to_cache(dump_indices)            
+        with nvtx.annotate("dumping", color='orange'):
+            self.dump_to_cache(dump_indices)            
 
-        invalid_indices, _ = self.check_data_valid(indices)
-        if (invalid_indices.size(0) > 0):
-            # print(f"invalid indices: {invalid_indices}")
-            self.alloc_for_batch(invalid_indices)
-            self.data_status[invalid_indices] = True
+        with nvtx.annotate("alloc", color='purple'):
+            invalid_indices, _ = self.check_data_valid(indices)
+            if (invalid_indices.size(0) > 0):
+                # print(f"invalid indices: {invalid_indices}")
+                self.alloc_for_batch(invalid_indices)
+                self.data_status[invalid_indices] = True
             
-        info = self.data_table[indices]
-        pos = info[:, 0] * self.num_slots_per_block + info[:, 1]
-        self.memory[pos] = data.to(self.pool.device)
-        self.mem_time[indices] = time
+        with nvtx.annotate("update", color='orange'):
+            info = self.data_table[indices]
+            pos = info[:, 0] * self.num_slots_per_block + info[:, 1]
+            self.memory[pos] = data.to(self.pool.device)
+            self.mem_time[indices] = time
         
     def check_data_valid(self, indices: torch.Tensor) -> torch.Tensor:
         """ check if indices are valid , return invalid indices """
@@ -552,115 +348,44 @@ class MemMailManager:
         
         self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]
         
-        free_spaces = self.free_spaces()
         # print(f"free spaces: {free_spaces.size(0)}, indices: {indices.size(0)}")
-        
-    def resize_cache(self, need_slots: int):
-        """ resize cache """
-        # free_spaces = self.free_spaces()
-        # if (free_spaces.size(0) < need_slots):
-        #     print(f"free slots: {free_spaces.size(0)}, need: {need_slots}")
-        #     return
-        # alloc = free_spaces[:need_slots]
-        # self.space_status[alloc[:, 0], alloc[:, 1]] = True
-        self.cache_table = torch.cat((self.cache_table, torch.zeros((need_slots, 2), dtype=torch.int32, device=self.pool.device)))
-        self.cache_ref = torch.cat((self.cache_ref, torch.zeros(need_slots, dtype=torch.int32, device=self.pool.device)), dim=0)
          
         
         
     def dump_to_cache(self, dump_indices:torch.Tensor)->torch.Tensor:
         """ waring : this is a !!!INSIDE API!!! """
         # check for cache empty spaces
+        if (dump_indices.shape[0] == 0):
+            return
         free_cache_slots = (self.cache_ref == 0).nonzero(as_tuple=True)[0].to(torch.int32)
-        if (free_cache_slots.size(0) < dump_indices.size(0)):
-            # print(f"free cache slots: {free_cache_slots.size(0)}, dump indices: {dump_indices.size(0)}")
-            self.resize_cache(dump_indices.size(0))
-            free_cache_slots = (self.cache_ref == 0).nonzero(as_tuple=True)[0].to(torch.int32).nonzero(as_tuple=True)[0].to(torch.int32)
-        
-        # alloc for cache
         alloc = free_cache_slots[:dump_indices.size(0)]
-        # self.cache_status[alloc] = True
-        
-        # update cache table
-        # print("indices_shape", dump_indices.shape)
-        # breakpoint()
-        self.cache_table[alloc] = self.data_table[dump_indices]
-        self.data_status[dump_indices] = False
-        self.cache_ref[alloc] = self.data_ref[dump_indices]
-        self.data_ref[dump_indices] = 0
-        
-        # 查表替换
-        flat = self.mailbox_table.flatten()
-        idx = torch.bucketize(flat, dump_indices, right=False)
-        valid_idx = idx < dump_indices.size(0)
-        matched = torch.zeros_like(flat, dtype=torch.bool)
-        matched[valid_idx] = flat[valid_idx] == dump_indices[idx[valid_idx]]
-        flat[matched] = alloc[idx[matched]] + self.max_idx
-        table_replaced = flat.view_as(self.mailbox_table)
-        self.mailbox_table = table_replaced
+        mem_manager_kernels.cache_dumper(
+            alloc,
+            dump_indices,
+            self.data_table,
+            self.data_ref,
+            self.data_status,
+            self.cache_table,
+            self.cache_ref,
+            self.mailbox_table
+        )
+            
+            # 查表替换
+        # with nvtx.annotate("main body", color = "yellow"):
+        #     flat = self.mailbox_table.flatten()
+        #     idx = torch.bucketize(flat, dump_indices, right=False)
+        #     valid_idx = idx < dump_indices.size(0)
+        #     matched = torch.zeros_like(flat, dtype=torch.bool)
+        #     matched[valid_idx] = flat[valid_idx] == dump_indices[idx[valid_idx]]
+        #     flat[matched] = alloc[idx[matched]] + self.max_idx
+        #     table_replaced = flat.view_as(self.mailbox_table)
+        #     self.mailbox_table = table_replaced
         
     import torch
 
-    def resolve_indices(self, P: torch.Tensor, tensorA: torch.Tensor, tensorB: torch.Tensor) -> torch.Tensor:
-        """
-        解析 P 中的 index，对应到 tensorA 或 tensorB 的行。
-
-        参数:
-            P:       [N, 2] 的整数张量，每行包含两个 index。
-            tensorA: [num_A, F] 的特征张量。
-            tensorB: [num_B, F] 的特征张量。
-
-        返回:
-            [N, 2, F] 的张量，其中每个 index 被映射到对应的行特征。
-        """
-        N, F = P.size(0), tensorA.size(1)
-
-        is_B = P >= self.max_idx
-        P_a_idx = torch.where(is_B, torch.tensor(-1, device=P.device), P)
-        P_b_idx = torch.where(is_B, P - self.max_idx, torch.tensor(-1, device=P.device))
-
-        # result = torch.empty((N, 2, F), dtype=tensorA.dtype, device=tensorA.device)
-
-        # for i in range(2):
-        #     a_mask = P_a_idx[:, i] != -1
-        #     b_mask = P_b_idx[:, i] != -1
-        #     result[a_mask, i] = tensorA[P_a_idx[a_mask, i]]
-        #     result[b_mask, i] = tensorB[P_b_idx[b_mask, i]]
-            # 初始化结果张量，默认填充为 (0, -1)
-        result = torch.empty((N, 2, F), dtype=tensorA.dtype, device=tensorA.device)
-        result[:, :, 0] = 0
-        result[:, :, 1] = -1
-
-        # tensorA 部分
-        flat_a_mask = P_a_idx != -1
-        flat_a_idx = P_a_idx[flat_a_mask]
-        result[flat_a_mask] = tensorA[flat_a_idx]
-
-        # tensorB 部分
-        flat_b_mask = P_b_idx != -1
-        flat_b_idx = P_b_idx[flat_b_mask]
-        result[flat_b_mask] = tensorB[flat_b_idx]
-
-        return result
-
     def get_mailbox_data(self, uniq: torch.Tensor)->torch.Tensor:
         """ get mailbox data """
-        # resolved = self.resolve_indices(self.mailbox_table[uniq], self.data_table, self.cache_table)
-        
-        # blockids = resolved[:, :, 0]  # shape: (N, 2)
-        # slots = resolved[:, :, 1]  # shape: (N, 2)
-
-        # # 计算 a * M + b
-        # result = blockids * self.num_slots_per_block + slots  # shape: (N, 2)
-        # mask0 = result[:, 0] != -1
-        # uniq_data = torch.zeros((result.size(0), self.memory.size(1)), device=self.memory.device, dtype=self.memory.dtype)
-        # uniq_data[mask0] = self.memory[result[mask0, 0]]
-
-        # # 处理 nbr_data（对应 result[:, 1]）
-        # mask1 = result[:, 1] != -1
-        # nbr_data = torch.zeros((result.size(0), self.memory.size(1)), device=self.memory.device, dtype=self.memory.dtype)
-        # nbr_data[mask1] = self.memory[result[mask1, 1]]
-        mem_data = concat_mail.get_mailbox_all_data(self.num_slots_per_block, 
+        return mem_manager_kernels.get_mailbox_data(self.num_slots_per_block, 
                                             self.efeat_manager.num_slots,
                                             uniq,
                                             self.mailbox_table,
@@ -672,40 +397,7 @@ class MemMailManager:
                                             self.efeat_manager.data_table,
                                             self.efeat_manager.memory,
                                             )
-        
-        # efeat_data = self.efeat_manager.get_data_batch_ori(self.mail_efeat_table[uniq])
-        # res = torch.cat((mem_data, efeat_data), dim=1)
-        # res = torch.cat((uniq_data, nbr_data, efeat_data), dim=1)
-        res = mem_data
-        return res 
     
-    # def get_mailbox_data(self, uniq: torch.Tensor)->torch.Tensor:
-    #     """ get mailbox data """
-    #     resolved = self.resolve_indices(self.mailbox_table[uniq], self.data_table, self.cache_table)
-        
-    #     blockids = resolved[:, :, 0]  # shape: (N, 2)
-    #     slots = resolved[:, :, 1]  # shape: (N, 2)
-
-    #     # 计算 a * M + b
-    #     result = blockids * self.num_slots_per_block + slots  # shape: (N, 2)
-        
-    #     # uniq_data = self.memory[result[:, 0]]
-    #     # nbr_data = self.memory[result[:, 1]]
-    #     # 初始化：设置为 zeros，shape 与 memory 中每条数据一致
-    #     # zero_vec = torch.zeros_like(self.memory[0])
-
-    #     # 处理 uniq_data（对应 result[:, 0]）
-    #     mask0 = result[:, 0] != -1
-    #     uniq_data = torch.zeros((result.size(0), self.memory.size(1)), device=self.memory.device, dtype=self.memory.dtype)
-    #     uniq_data[mask0] = self.memory[result[mask0, 0]]
-
-    #     # 处理 nbr_data（对应 result[:, 1]）
-    #     mask1 = result[:, 1] != -1
-    #     nbr_data = torch.zeros((result.size(0), self.memory.size(1)), device=self.memory.device, dtype=self.memory.dtype)
-    #     nbr_data[mask1] = self.memory[result[mask1, 1]]
-    #     efeat_data = self.efeat_manager.get_data_batch_ori(self.mail_efeat_table[uniq])
-    #     res = torch.cat((uniq_data, nbr_data, efeat_data), dim=1)
-    #     return res
     
     def get_mailbox_time(self, indices: torch.Tensor):
         return self.mail_time[indices]
@@ -775,3 +467,8 @@ if __name__ == "__main__":
                            time=torch.tensor([0], dtype=torch.float32, device='cuda'),)
     manager.get_mailbox_data(torch.tensor([1, 2, 5, 8], dtype=torch.int32, device='cuda'))
     print(manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda')))
+    
+    x = torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
+    uniq, count = mem_manager_kernels.unique_with_count(x, maxidx=6)
+    print("uniq:", uniq)
+    print("count:", count)

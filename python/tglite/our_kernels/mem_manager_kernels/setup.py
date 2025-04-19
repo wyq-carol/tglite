@@ -2,13 +2,13 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 setup(
-    name='get_feat',
+    name='mem_manager',
     ext_modules=[
         CUDAExtension(
-            name='get_feat',
+            name='mem_manager',
             sources=[
-                'get_feat.cpp',
-                'get_feat_kernel.cu'
+                'mem_manager.cpp',
+                'mem_manager_kernels.cu'
             ],
             extra_compile_args={
                 'cxx': ['-fopenmp', '-std=c++17'],

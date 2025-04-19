@@ -1,0 +1,5 @@
+python /root/tglite/examples/tgn/train.py -d wiki-talk --seed 0 --prefix exp --move \
+ --epochs 3 --bsize 6000 --n-threads 8 \
+ --n-layer 1 --n-heads 2 --n-nbrs 10 \
+ --sampling recent "$@" \
+ --on-heter 0 --all-on-gpu 0 --offline-sample 0 --perf-ceil 0 --block-mem-on 1

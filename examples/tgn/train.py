@@ -9,7 +9,7 @@ from tgn import TGN
 import nvtx
 from tglite.gpu_mem_track import *
 import tglite.config
-from tglite.blockMgrsv5_1 import *
+from tglite.blockMgrs_v6e1 import *
 # from tglite.blockMgrsv4 import *
 # from tglite.blockMgrs import *
 import pandas as pd
