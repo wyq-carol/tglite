@@ -177,7 +177,7 @@ if __name__ == "__main__":
             g._mem.move_to(device)
             g._mailbox.move_to(device)
 
-        manager_mem_mail = MemMailManager(shared_pool, DIM_EMBED, g.num_nodes(), manager_efeat, math.ceil(g.num_nodes()/(4300/100)), g.num_nodes())
+        manager_mem_mail = MemMailManager(shared_pool, DIM_EMBED, g.num_nodes(), manager_efeat, math.ceil(g.num_nodes()/(4300/100)) * 3, g.num_nodes())
 
     elif tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu
