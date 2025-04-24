@@ -1361,7 +1361,7 @@ class TGN(nn.Module):
             b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst = self.sample_our_layer2(g, nids, times)
 
         if len(self._mailboxUpd_samples) > batch._b_id + 1:
-            mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self._mailboxUpd_samples[batch._b_id + 1]
+            mailbox_ref_uniq, mailbox_ref_counts, mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self._mailboxUpd_samples[batch._b_id + 1]
 
         with torch.cuda.StreamContext(torch.cuda.Stream()):
             if self.num_layers == 1:
@@ -1382,7 +1382,7 @@ class TGN(nn.Module):
                                 b2_unique_eids.to("cuda"), b2_inverse_eids.to("cuda"), b2_unique_nids.to("cuda"), \
                                 b2_unique_dstnodes.to("cuda"), b2_inverse_dstnodes.to("cuda"), b2_unique_srcnodes.to("cuda"), b2_inverse_srcnodes.to("cuda"), \
                                 b2_Q_node_idx.to("cuda"), b2_reindex.to("cuda"), b2_reduce_idx.to("cuda"), b2_num_src, b2_num_dst
-            self.curr_mailboxUpd = mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
+            self.curr_mailboxUpd = mailbox_ref_uniq.to("cuda"), mailbox_ref_counts.to("cuda"), mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
             TEST_BLKM_preload_sampling_event = torch.cuda.Event()
             TEST_BLKM_preload_sampling_event.record()
         TEST_BLKM_preload_sampling_event.synchronize()
@@ -1594,7 +1594,7 @@ class TGN(nn.Module):
                 
                 if len(self._mailboxUpd_samples) > batch._b_id:
                     # import pdb;pdb.set_trace()
-                    mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self._mailboxUpd_samples[batch._b_id]
+                    mailbox_ref_uniq, mailbox_ref_counts, mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self._mailboxUpd_samples[batch._b_id]
 
                 # loading 
                 with torch.cuda.StreamContext(torch.cuda.Stream()):
@@ -1622,7 +1622,7 @@ class TGN(nn.Module):
                                         b2_unique_eids.to("cuda"), b2_inverse_eids.to("cuda"), b2_unique_nids.to("cuda"), \
                                         b2_unique_dstnodes.to("cuda"), b2_inverse_dstnodes.to("cuda"), b2_unique_srcnodes.to("cuda"), b2_inverse_srcnodes.to("cuda"), \
                                         b2_Q_node_idx.to("cuda"), b2_reindex.to("cuda"), b2_reduce_idx.to("cuda"), b2_num_src, b2_num_dst
-                    self.curr_mailboxUpd = mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
+                    self.curr_mailboxUpd = mailbox_ref_uniq.to("cuda"), mailbox_ref_counts.to("cuda"), mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
                     TEST_BLKM_preload_sampling_event = torch.cuda.Event()
                     TEST_BLKM_preload_sampling_event.record()
                 TEST_BLKM_preload_sampling_event.synchronize()
@@ -1644,7 +1644,7 @@ class TGN(nn.Module):
                 b2_unique_eids, b2_inverse_eids, b2_unique_nids, \
                 b2_unique_dstnodes, b2_inverse_dstnodes, b2_unique_srcnodes, b2_inverse_srcnodes, \
                 b2_Q_node_idx, b2_reindex, b2_reduce_idx, b2_num_src, b2_num_dst = self.curr_data
-            mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self.curr_mailboxUpd
+            mailbox_ref_uniq, mailbox_ref_counts, mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = self.curr_mailboxUpd
             self.curr_data = None # curr_data被使用后即赋值为None
 
             # updating and aggregating
@@ -1785,6 +1785,7 @@ class TGN(nn.Module):
                 #     batch.g.mailbox.store(mailbox_uniq.long(), mail, mailbox_ets, mailbox_uniq.long(), mailbox_nbrs.long(), batch._b_id)
                 
                 with torch.no_grad():
+                    # mailbox_ref_uniq, mailbox_ref_counts
                     self.ctx.manager_mem_mail.update_mailbox(mailbox_uniq, mailbox_nbrs, mailbox_eid, mailbox_ets)
             return scores
 
@@ -2031,10 +2032,11 @@ class TGN(nn.Module):
         with nvtx.annotate("save raw msgs-store mail_ts", color="red"):
 
             # # ! mailbox uniq, nbrs, ets 统计
+            # ref_uniq, ref_counts = torch.unique(torch.cat([uniq, nbrs]), return_counts=True)
             # if self.is_train:
-            #     add_mailbox_upd_batch((uniq.int(), nbrs.int(), mail_ts, torch.tensor(blk.eid).int()))
+            #     add_mailbox_upd_batch((ref_uniq.int(), ref_counts.int(), uniq.int(), nbrs.int(), mail_ts, torch.tensor(blk.eid).int()))
             # else:
-            #     add_mailbox_upd_batch_eval((uniq.int(), nbrs.int(), mail_ts, torch.tensor(blk.eid).int()))
+            #     add_mailbox_upd_batch_eval((ref_uniq.int(), ref_counts.int(), uniq.int(), nbrs.int(), mail_ts, torch.tensor(blk.eid).int()))
 
             batch.g.mailbox.store(uniq, mail, mail_ts)
             # memory_stats(inspect.getfile(inspect.currentframe()), inspect.currentframe().f_lineno)
