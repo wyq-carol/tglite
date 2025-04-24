@@ -681,23 +681,25 @@ __global__ void allocate_space_kernel(
     const int* alloc,         // shape (N, 2)
     const int* indices,       // shape (N,)
     bool* space_status,       // shape (num_blocks * num_slots_per_block)
-    const int* space_table,   // shape (num_blocks * num_slots_per_block)
-    int* data_table,          // shape (任意大)
+    const int* space_table,   // shape (num_blocks * num_slots_per_block, 2)
+    int* data_table,          // shape (num_blocks * num_slots_per_block, 2)
     int num_slots_per_block,
     int N
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N) return;
 
-    int block_id = alloc[2 * i + 0];
-    int slot_id  = alloc[2 * i + 1];
-    int flat_idx = block_id * num_slots_per_block + slot_id;
+    int row_id = alloc[2 * i + 0];
+    int col_id  = alloc[2 * i + 1];
+    int flat_idx = row_id * num_slots_per_block + col_id;
 
     // 修改 space_status[block_id][slot_id] = true
     space_status[flat_idx] = true;
 
     // 赋值 data_table[indices[i]] = space_table[flat_idx]
-    data_table[indices[i]] = space_table[flat_idx];
+    data_table[indices[i] * 2 + 0] = space_table[flat_idx * 2 + 0];
+    data_table[indices[i] * 2 + 1] = space_table[flat_idx * 2 + 1];
+
 }
 
 void launch_allocate_space_kernel(
@@ -719,6 +721,7 @@ void launch_allocate_space_kernel(
 
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
+
 
     allocate_space_kernel<<<blocks, threads>>>(
         alloc.data_ptr<int>(),

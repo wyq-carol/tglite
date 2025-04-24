@@ -4,6 +4,8 @@ import torch
 import numpy as np
 import tglite as tg
 
+import sys
+sys.path.append("/home/tglite/examples")
 import support
 from tgn import TGN
 import nvtx

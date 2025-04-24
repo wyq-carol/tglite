@@ -6,8 +6,8 @@
 #  version6 edition0 turned to cuda kernels
 #  version6 edition1 cleanup codes
 #  version6 edition2 add update mem kernels
-#
-#
+#  version6 edition3 add alloc kernels
+#  version6 edition4 bug fix : alloc kernel bug
 #
 ########################################################                             
 
@@ -43,7 +43,6 @@ class BlockPool:
         free_blocks = torch.where(self.block_status == False)[0]
         if (free_blocks.size(0) < num_needed):
             raise ValueError(f"ERROR: NO FREE SPACES : free blocks: {free_blocks.size(0)}, need: {num_needed}")
-            return None
         free_blocks = free_blocks[:num_needed]
         self.block_status[free_blocks] = True     
         return free_blocks 
@@ -224,6 +223,14 @@ class MemMailManager:
         
         self.efeat_manager = efeat_manager
         self.counter = 0
+        
+        # self.pre_alloc()
+
+    def pre_alloc(self):
+        """ pre alloc for mailbox """
+        self.alloc_for_batch(torch.arange(self.max_idx, dtype=torch.int32, device=self.pool.device))
+        self.data_status = torch.ones(self.max_idx, dtype=torch.bool, device=self.pool.device)
+        # warning for data status
 
     def reset(self):
         """ reset mem manager """
@@ -257,14 +264,16 @@ class MemMailManager:
         """ resize block manager """
         alloc_blocks = self.next_power_size(need_slots) - self.num_blocks_got
         free_blocks = self.pool.allocate_block(alloc_blocks)
-        blockid = free_blocks.repeat_interleave(self.num_slots_per_block).to(torch.int32).to(self.pool.device) 
-        slotid = torch.tile(torch.arange(self.num_slots_per_block, dtype=torch.int32, device=self.pool.device), (alloc_blocks, )) 
         
-        new_table = torch.stack((blockid, slotid), dim=1).to(self.pool.device)
-        self.space_table = torch.cat((self.space_table, new_table), dim=0)
-        
-        new_status = torch.zeros((free_blocks.size(0), self.num_slots_per_block), dtype=torch.bool, device=self.pool.device)
-        self.space_status = torch.cat((self.space_status, new_status), dim=0)
+        with nvtx.annotate("table manage", color = 'red'):
+            blockid = free_blocks.repeat_interleave(self.num_slots_per_block).to(torch.int32).to(self.pool.device) 
+            slotid = torch.tile(torch.arange(self.num_slots_per_block, dtype=torch.int32, device=self.pool.device), (alloc_blocks, )) 
+            
+            new_table = torch.stack((blockid, slotid), dim=1).to(self.pool.device)
+            self.space_table = torch.cat((self.space_table, new_table), dim=0)
+            
+            new_status = torch.zeros((free_blocks.size(0), self.num_slots_per_block), dtype=torch.bool, device=self.pool.device)
+            self.space_status = torch.cat((self.space_status, new_status), dim=0)
     
     
     def get_mem_data(self, indices: torch.Tensor) -> torch.Tensor:
@@ -282,15 +291,17 @@ class MemMailManager:
     def update_mem_batch(self, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
         """ update mem, if u dont tell me mailbox update info, i will conservatively dump to cache """
         # not stored yet, no need to dump to cache
-        invalid_indices, valid_indices = self.check_data_valid(indices)
+        with nvtx.annotate("check valid", color='orange'):
+            invalid_indices, valid_indices = self.check_data_valid(indices)
         if (invalid_indices.size(0) > 0):
             # print(f"invalid indices: {invalid_indices}")
             self.alloc_for_batch(invalid_indices)
             self.data_status[invalid_indices] = True
+        # valid_indices = indices
 
         # check for dump to cache
         with nvtx.annotate("check dump", color='orange'): 
-            dump_indices = mem_manager_kernels.dump_launcher(
+            mem_manager_kernels.dump_launcher(
                 self.max_idx,
                 self.mailbox_table,
                 up_mailbox_uniq,
@@ -298,38 +309,21 @@ class MemMailManager:
                 self.cache_ref,
                 self.data_ref,
                 # self.cache_table,
-                # torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
-                valid_indices
+                torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
             )
-            # drop_lines_mailbox = self.mailbox_table[up_mailbox_uniq]
-            # mask = drop_lines_mailbox >= 0
-            # filtered = drop_lines_mailbox[mask]
-            # with nvtx.annotate("unique1", color='blue'): 
-            #     # unique, counts = torch.unique(filtered, return_counts=True)
-            #     unique, counts = mem_manager_kernels.unique_with_count(filtered)
             
-            # mask_valid = unique < self.max_idx
-            # non_cached_indices = unique[mask_valid]
-            # non_cached_counts = counts[mask_valid]
-
-            # cached_indices = unique[~mask_valid] - self.max_idx
-            # cached_counts = counts[~mask_valid]
-            
-            # self.data_ref[non_cached_indices] -= non_cached_counts
-            # self.cache_ref[cached_indices] -= cached_counts
-            
-            # with nvtx.annotate("sort", color='blue'): 
-            #     valid_indices = torch.sort(valid_indices).values
-            # dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
+            with nvtx.annotate("sort", color='blue'): 
+                valid_indices = torch.sort(valid_indices).values
+            dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
             with nvtx.annotate("unique2", color='blue'): 
                 unique, counts = torch.unique(torch.cat((up_mailbox_nbr, up_mailbox_uniq)), return_counts=True)        
             self.data_ref[unique] += counts
 
         with nvtx.annotate("dumping", color='orange'):
             self.dump_to_cache(dump_indices)            
-
-        with nvtx.annotate("alloc", color='purple'):
+        with nvtx.annotate("check", color='purple'):
             invalid_indices, _ = self.check_data_valid(indices)
+        with nvtx.annotate("alloc", color='purple'):
             if (invalid_indices.size(0) > 0):
                 # print(f"invalid indices: {invalid_indices}")
                 self.alloc_for_batch(invalid_indices)
@@ -357,25 +351,19 @@ class MemMailManager:
         # Step 1 : check fot valid space
         free_spaces = self.free_spaces()
         if (free_spaces.size(0) < indices.size(0)):
-            # if (self.DEBUG):
-            # print(f"free spaces: {free_spaces.size(0)}, indices: {indices.size(0)}")
             self.resize(indices.size(0))
             free_spaces = self.free_spaces()
             
             # return
         # Step 2 : alloc for indices
-        
-        alloc = free_spaces[:indices.size(0)]
-        # self.space_status[alloc[:, 0], alloc[:, 1]] = True
-        
-        # self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]
-        
-        mem_manager_kernels.launch_allocate_space_kernel(
-            alloc, indices, self.space_status, self.space_table, self.data_table, self.num_slots_per_block
+        with nvtx.annotate("alloc", color='orange'):
+            alloc = free_spaces[:indices.size(0)]
+            mem_manager_kernels.launch_allocate_space_kernel(
+            alloc.contiguous(), indices, self.space_status, self.space_table, self.data_table, self.num_slots_per_block
         )
-
-        # free_spaces = self.free_spaces()
-        # print(f"free spaces: {free_spaces.size(0)}, indices: {indices.size(0)}")
+            # alloc = free_spaces[:indices.size(0)]
+            # self.space_status[alloc[:, 0], alloc[:, 1]] = True
+            self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]   
          
         
         
@@ -385,38 +373,29 @@ class MemMailManager:
         if (dump_indices.shape[0] == 0):
             return
         free_cache_slots = (self.cache_ref == 0).nonzero(as_tuple=True)[0].to(torch.int32)
-        
-        # alloc for cache
-        with nvtx.annotate("main body", color = "yellow"):
-            alloc = free_cache_slots[:dump_indices.size(0)]
-            
-            # self.cache_table[alloc] = self.data_table[dump_indices]
-            # self.data_status[dump_indices] = False
-            # self.cache_ref[alloc] = self.data_ref[dump_indices]
-            # self.data_ref[dump_indices] = 0
-
-            mem_manager_kernels.cache_dumper(
-                alloc,
-                dump_indices,
-                self.data_table,
-                self.data_ref,
-                self.data_status,
-                self.cache_table,
-                self.cache_ref,
-                self.mailbox_table
-            )
+        alloc = free_cache_slots[:dump_indices.size(0)]
+        mem_manager_kernels.cache_dumper(
+            alloc,
+            dump_indices,
+            self.data_table,
+            self.data_ref,
+            self.data_status,
+            self.cache_table,
+            self.cache_ref,
+            self.mailbox_table
+        )
             
             # 查表替换
-            # flat = self.mailbox_table.flatten()
-            # idx = torch.bucketize(flat, dump_indices, right=False)
-            # valid_idx = idx < dump_indices.size(0)
-            # matched = torch.zeros_like(flat, dtype=torch.bool)
-            # matched[valid_idx] = flat[valid_idx] == dump_indices[idx[valid_idx]]
-            # flat[matched] = alloc[idx[matched]] + self.max_idx
-            # table_replaced = flat.view_as(self.mailbox_table)
-            # self.mailbox_table = table_replaced
+        # with nvtx.annotate("main body", color = "yellow"):
+        #     flat = self.mailbox_table.flatten()
+        #     idx = torch.bucketize(flat, dump_indices, right=False)
+        #     valid_idx = idx < dump_indices.size(0)
+        #     matched = torch.zeros_like(flat, dtype=torch.bool)
+        #     matched[valid_idx] = flat[valid_idx] == dump_indices[idx[valid_idx]]
+        #     flat[matched] = alloc[idx[matched]] + self.max_idx
+        #     table_replaced = flat.view_as(self.mailbox_table)
+        #     self.mailbox_table = table_replaced
         
-    import torch
 
     def get_mailbox_data(self, uniq: torch.Tensor)->torch.Tensor:
         """ get mailbox data """
@@ -500,29 +479,10 @@ if __name__ == "__main__":
     manager.update_mailbox(torch.tensor([8], dtype=torch.int32, device='cuda'), torch.tensor([1], dtype=torch.int32, device='cuda'),
                            torch.tensor([9], dtype=torch.int32, device='cuda'),
                            time=torch.tensor([0], dtype=torch.float32, device='cuda'),)
-    # print(manager.get_mailbox_data(torch.tensor([1, 2, 5, 8], dtype=torch.int32, device='cuda')))
-    # print(manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda')))
-    print(manager.cache_table)
-    print(manager.cache_ref)
-    print(manager.data_table)
-    print(manager.data_ref)
-    print(manager.mailbox_table)
+    manager.get_mailbox_data(torch.tensor([1, 2, 5, 8], dtype=torch.int32, device='cuda'))
+    print(manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda')))
     
-    mailbox = torch.tensor([2, 5, 8, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
-    mailbox = mailbox.reshape((-1, 2))
-    uniq = torch.tensor([1, 2], dtype=torch.int32, device='cuda')
-    nbr = torch.tensor([5, 6], dtype=torch.int32, device='cuda')
-    cache_ref = torch.tensor([0, 1, 1, 1, 0, 0, 0, 0], dtype=torch.int32, device='cuda')
-    data_ref = torch.tensor([1, 1, 1, 0, 0, 0, 0, 0], dtype=torch.int32, device='cuda')
-    extract = mem_manager_kernels.dump_launcher(
-        6,
-        mailbox,
-        uniq,
-        nbr,
-        cache_ref,
-        data_ref,
-        torch.tensor([0], dtype=torch.int32, device='cuda'),
-    )
-    print(extract)
-    print(data_ref)
-    print(cache_ref)
+    x = torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
+    uniq, count = mem_manager_kernels.unique_with_count(x, maxidx=6)
+    print("uniq:", uniq)
+    print("count:", count)
