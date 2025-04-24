@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     if tglite.config.TEST_BLKM:
         # TODO A100 40G 目前只支持efeat_dim = 172
-        shared_pool = BlockPool(total_mem_gb=30, block_elements=4300)
+        shared_pool = BlockPool(total_mem_gb=16, block_elements=4300)
     
         # manager_nfeat = BlockManager(shared_pool, feature_size=100, max_manager_index=g.num_nodes())
         # manager_efeat = BlockManager(shared_pool, feature_size=172, max_manager_index=g.num_edges())

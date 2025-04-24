@@ -9,6 +9,7 @@
 #  version6 edition3 feat    : add alloc kernels
 #  version6 edition4 bug fix : alloc kernel bug
 #  version7 edition0 feat    : pre alloc for mem manager
+#  version7 edition1 feat    : update mem kernel fine tune
 ########################################################                             
 
 
@@ -214,7 +215,7 @@ class MemMailManager:
         blockid = free_blocks.repeat_interleave(self.num_slots_per_block).to(torch.int32).to(self.pool.device) 
         slotid = torch.tile(torch.arange(self.num_slots_per_block, dtype=torch.int32, device=self.pool.device), (self.num_blocks_got,)) 
         self.space_table = torch.stack((blockid, slotid), dim=1).to(self.pool.device)
-        self.space_status = torch.zeros((self.num_blocks_got, self.num_slots_per_block), dtype=torch.bool, device=self.pool.device)
+        self.space_status = torch.ones((self.num_blocks_got, self.num_slots_per_block), dtype=torch.int32, device=self.pool.device)
         self.memory = self.pool.memory.reshape(-1, self.feature_size)
         
         self.mem_time = torch.zeros(self.max_idx, dtype=torch.float32, device=pool.device)
@@ -246,7 +247,7 @@ class MemMailManager:
         self.mail_efeat_table = torch.full((self.max_idx,), -1, dtype=torch.int32, device=self.pool.device)
 
         self.mem_time = torch.zeros(self.max_idx, dtype=torch.float32, device=self.pool.device)
-        self.space_status = torch.zeros((self.num_blocks_got, self.num_slots_per_block), dtype=torch.bool, device=self.pool.device)
+        self.space_status = torch.ones((self.num_blocks_got * self.num_slots_per_block), dtype=torch.int32, device=self.pool.device)
         
              
         
@@ -272,7 +273,7 @@ class MemMailManager:
             new_table = torch.stack((blockid, slotid), dim=1).to(self.pool.device)
             self.space_table = torch.cat((self.space_table, new_table), dim=0)
             
-            new_status = torch.zeros((free_blocks.size(0), self.num_slots_per_block), dtype=torch.bool, device=self.pool.device)
+            new_status = torch.ones((free_blocks.size(0) * self.num_slots_per_block), dtype=torch.int32, device=self.pool.device)
             self.space_status = torch.cat((self.space_status, new_status), dim=0)
     
     
@@ -290,13 +291,6 @@ class MemMailManager:
 
     def update_mem_batch(self, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
         """ update mem, if u dont tell me mailbox update info, i will conservatively dump to cache """
-        # not stored yet, no need to dump to cache
-        # with nvtx.annotate("check valid", color='orange'):
-        #     invalid_indices, valid_indices = self.check_data_valid(indices)
-        # if (invalid_indices.size(0) > 0):
-        #     # print(f"invalid indices: {invalid_indices}")
-        #     self.alloc_for_batch(invalid_indices)
-        #     self.data_status[invalid_indices] = True
         valid_indices = indices
 
         # check for dump to cache
@@ -310,32 +304,22 @@ class MemMailManager:
                 self.data_ref,
                 valid_indices
             )
-            
-        # with nvtx.annotate("sort", color='blue'): 
-        #     valid_indices = torch.sort(valid_indices).values
-        # dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
         with nvtx.annotate("unique2", color='blue'): 
             catted = torch.cat((up_mailbox_nbr, up_mailbox_uniq))
             with nvtx.annotate("unique", color='green'):
-                unique, counts = torch.unique(catted, return_counts=True)      
-                print(uniq.shape[0])  
-            self.data_ref[unique] += counts
+                unique, counts = torch.unique(catted, return_counts=True)   
+                unique = unique.to(torch.int32)
+                counts = counts.to(torch.int32)    
+            # self.data_ref[unique] += counts
+            mem_manager_kernels.add_counts(unique, counts, self.data_ref)
 
         with nvtx.annotate("dumping", color='orange'):
             self.dump_to_cache(dump_indices)            
-        # with nvtx.annotate("check", color='purple'):
-            # invalid_indices, _ = self.check_data_valid(indices)
-            invalid_indices = dump_indices
         with nvtx.annotate("alloc", color='purple'):
-            if (invalid_indices.size(0) > 0):
-                # print(f"invalid indices: {invalid_indices}")
-                self.alloc_for_batch(invalid_indices)
-                self.data_status[invalid_indices] = True
+            if (dump_indices.size(0) > 0):
+                self.alloc_for_batch(dump_indices)
             
         with nvtx.annotate("update", color='orange'):
-            # info = self.data_table[indices]
-            # pos = info[:, 0] * self.num_slots_per_block + info[:, 1]
-            # self.memory[pos] = data.to(self.pool.device)
             mem_manager_kernels.write_data_to_memory(
                 self.data_table,
                 indices,
@@ -358,22 +342,15 @@ class MemMailManager:
     
     def alloc_for_batch(self, indices: torch.Tensor):
         """ waring : this is a !!!INSIDE API!!!, please make sure all the indices in data_table are valid, u can use check_data_valid to flit it """
-        # Step 1 : check fot valid space
-        free_spaces = self.free_spaces()
-        if (free_spaces.size(0) < indices.size(0)):
-            self.resize(indices.size(0))
-            free_spaces = self.free_spaces()
-            
-            # return
-        # Step 2 : alloc for indices
         with nvtx.annotate("alloc", color='orange'):
-            alloc = free_spaces[:indices.size(0)]
             mem_manager_kernels.launch_allocate_space_kernel(
-            alloc.contiguous(), indices, self.space_status, self.space_table, self.data_table, self.num_slots_per_block
+            indices,
+            self.space_status, 
+            self.data_status,
+            self.space_table, 
+            self.data_table, 
+            self.num_slots_per_block
         )
-            # alloc = free_spaces[:indices.size(0)]
-            # self.space_status[alloc[:, 0], alloc[:, 1]] = True
-            # self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]   
          
         
         
@@ -382,10 +359,10 @@ class MemMailManager:
         # check for cache empty spaces
         if (dump_indices.shape[0] == 0):
             return
-        free_cache_slots = (self.cache_ref == 0).nonzero(as_tuple=True)[0].to(torch.int32)
-        alloc = free_cache_slots[:dump_indices.size(0)]
+        # free_cache_slots = (self.cache_ref == 0).nonzero(as_tuple=True)[0].to(torch.int32)
+        # alloc = free_cache_slots[:dump_indices.size(0)]
         mem_manager_kernels.cache_dumper(
-            alloc,
+            # (self.cache_ref == 0).to(torch.int32),
             dump_indices,
             self.data_table,
             self.data_ref,
@@ -432,7 +409,7 @@ class MemMailManager:
         
     def free_spaces(self) -> torch.Tensor:
         """ get free spaces """
-        free_space = (~self.space_status).nonzero().to(torch.int32)
+        free_space = self.space_status.nonzero().to(torch.int32)
         return free_space
         
 
@@ -491,8 +468,3 @@ if __name__ == "__main__":
                            time=torch.tensor([0], dtype=torch.float32, device='cuda'),)
     manager.get_mailbox_data(torch.tensor([1, 2, 5, 8], dtype=torch.int32, device='cuda'))
     print(manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda')))
-    
-    x = torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
-    uniq, count = mem_manager_kernels.unique_with_count(x, maxidx=6)
-    print("uniq:", uniq)
-    print("count:", count)
