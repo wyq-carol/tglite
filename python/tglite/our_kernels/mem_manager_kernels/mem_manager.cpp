@@ -66,6 +66,14 @@ void launch_allocate_space_kernel(
     int num_slots_per_block
 );
 
+void write_data_to_memory(
+    torch::Tensor data_table,    // int32 [N, 2]
+    torch::Tensor indices,       // int32 [N]
+    torch::Tensor data,          // int32 [N]
+    torch::Tensor memory,        // int32 [total_memory_size]
+    int num_slots_per_block
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.def("get_mem_data", &get_mem_data, "Get mem data");
@@ -76,6 +84,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("dump_launcher", &dump_launcher, "Dump launcher");
     m.def("check_data_valid", &check_data_valid, "Check data valid");
     m.def("launch_allocate_space_kernel", &launch_allocate_space_kernel, "Launch allocate space kernel");
+    m.def("write_data_to_memory", &write_data_to_memory, "Write data to memory");
 }
 
 

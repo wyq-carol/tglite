@@ -9,10 +9,12 @@ dist/
 build/
 *.egg-info/
 *.so
+*/build/*
+*.pt
+core
 
 docs/_build/
 
-examples/core
 examples/data
 examples/models/
 examples/out-*.csv

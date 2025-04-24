@@ -693,10 +693,8 @@ __global__ void allocate_space_kernel(
     int col_id  = alloc[2 * i + 1];
     int flat_idx = row_id * num_slots_per_block + col_id;
 
-    // 修改 space_status[block_id][slot_id] = true
     space_status[flat_idx] = true;
 
-    // 赋值 data_table[indices[i]] = space_table[flat_idx]
     data_table[indices[i] * 2 + 0] = space_table[flat_idx * 2 + 0];
     data_table[indices[i] * 2 + 1] = space_table[flat_idx * 2 + 1];
 
@@ -710,15 +708,8 @@ void launch_allocate_space_kernel(
     torch::Tensor data_table,    // int32
     int num_slots_per_block
 ) {
-    TORCH_CHECK(alloc.dtype() == torch::kInt32 && alloc.dim() == 2 && alloc.size(1) == 2, "alloc must be (N, 2) int32");
-    TORCH_CHECK(indices.dtype() == torch::kInt32 && indices.dim() == 1, "indices must be (N,) int32");
-    TORCH_CHECK(space_status.dtype() == torch::kBool && space_status.dim() == 2, "space_status must be bool 2D");
-    TORCH_CHECK(space_table.dtype() == torch::kInt32, "space_table must be int32");
-    TORCH_CHECK(data_table.dtype() == torch::kInt32, "data_table must be int32");
 
     int N = indices.size(0);
-    TORCH_CHECK(alloc.size(0) >= N, "alloc rows must >= indices size");
-
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
 
@@ -731,5 +722,49 @@ void launch_allocate_space_kernel(
         data_table.data_ptr<int>(),
         num_slots_per_block,
         N
+    );
+}
+
+
+__global__ void write_data_to_memory_kernel(
+    const int* data_table,    // shape: (total_table_size, 2)
+    const int* indices,       // shape: (N,)
+    const float* data,          // shape: (N,)
+    float* memory,              // shape: (total_memory_size,)
+    int num_slots_per_block,
+    int feature_size,
+    int N
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    int index = indices[i]; 
+
+    int block = data_table[index * 2 + 0];
+    int slot  = data_table[index * 2 + 1];
+    int pos   = block * num_slots_per_block + slot;
+
+    for (int j = 0; j < feature_size; ++j) {
+        memory[pos * feature_size + j] = data[i * feature_size + j];
+    }
+}
+void write_data_to_memory(
+    torch::Tensor data_table,    // int32 [N, 2]
+    torch::Tensor indices,       // int32 [M]
+    torch::Tensor data,          // float [M]
+    torch::Tensor memory,        // float [total_memory_size]
+    int num_slots_per_block
+){
+    int M = indices.size(0);
+    int threads = 256;
+    int blocks = (M + threads - 1) / threads;
+    write_data_to_memory_kernel<<<blocks, threads>>>(
+        data_table.data_ptr<int>(),
+        indices.data_ptr<int>(),
+        data.data_ptr<float>(),
+        memory.data_ptr<float>(),
+        num_slots_per_block,
+        data.size(1),
+        M
     );
 }

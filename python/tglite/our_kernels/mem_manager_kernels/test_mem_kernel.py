@@ -1,14 +1,14 @@
 #######################################################
 #
 #  UPDATE LOG:
-#  version5 edition0 triton kernels added
-#  version5 edition1 fixed ref bugs 
-#  version6 edition0 turned to cuda kernels
-#  version6 edition1 cleanup codes
-#  version6 edition2 add update mem kernels
-#  version6 edition3 add alloc kernels
+#  version5 edition0 feat    : triton kernels added
+#  version5 edition1 bug fix : fixed ref bugs 
+#  version6 edition0 feat    : turned to cuda kernels
+#  version6 edition1 tidy    : cleanup codes
+#  version6 edition2 feat    : add update mem kernels
+#  version6 edition3 feat    : add alloc kernels
 #  version6 edition4 bug fix : alloc kernel bug
-#
+#  version7 edition0 feat    : pre alloc for mem manager
 ########################################################                             
 
 
@@ -224,12 +224,12 @@ class MemMailManager:
         self.efeat_manager = efeat_manager
         self.counter = 0
         
-        # self.pre_alloc()
+        self.pre_alloc()
 
     def pre_alloc(self):
         """ pre alloc for mailbox """
         self.alloc_for_batch(torch.arange(self.max_idx, dtype=torch.int32, device=self.pool.device))
-        self.data_status = torch.ones(self.max_idx, dtype=torch.bool, device=self.pool.device)
+        # self.data_status = torch.ones(self.max_idx, dtype=torch.bool, device=self.pool.device)
         # warning for data status
 
     def reset(self):
@@ -291,32 +291,31 @@ class MemMailManager:
     def update_mem_batch(self, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
         """ update mem, if u dont tell me mailbox update info, i will conservatively dump to cache """
         # not stored yet, no need to dump to cache
-        with nvtx.annotate("check valid", color='orange'):
-            invalid_indices, valid_indices = self.check_data_valid(indices)
-        if (invalid_indices.size(0) > 0):
-            # print(f"invalid indices: {invalid_indices}")
-            self.alloc_for_batch(invalid_indices)
-            self.data_status[invalid_indices] = True
-        # valid_indices = indices
+        # with nvtx.annotate("check valid", color='orange'):
+        #     invalid_indices, valid_indices = self.check_data_valid(indices)
+        # if (invalid_indices.size(0) > 0):
+        #     # print(f"invalid indices: {invalid_indices}")
+        #     self.alloc_for_batch(invalid_indices)
+        #     self.data_status[invalid_indices] = True
+        valid_indices = indices
 
         # check for dump to cache
         with nvtx.annotate("check dump", color='orange'): 
-            mem_manager_kernels.dump_launcher(
+            dump_indices = mem_manager_kernels.dump_launcher(
                 self.max_idx,
                 self.mailbox_table,
                 up_mailbox_uniq,
                 up_mailbox_nbr,
                 self.cache_ref,
                 self.data_ref,
-                # self.cache_table,
-                torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
+                valid_indices
             )
             
-            with nvtx.annotate("sort", color='blue'): 
-                valid_indices = torch.sort(valid_indices).values
-            dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
-            with nvtx.annotate("unique2", color='blue'): 
-                unique, counts = torch.unique(torch.cat((up_mailbox_nbr, up_mailbox_uniq)), return_counts=True)        
+        # with nvtx.annotate("sort", color='blue'): 
+        #     valid_indices = torch.sort(valid_indices).values
+        # dump_indices = valid_indices[self.data_ref[valid_indices] > 0]
+        with nvtx.annotate("unique2", color='blue'): 
+            unique, counts = torch.unique(torch.cat((up_mailbox_nbr, up_mailbox_uniq)), return_counts=True)        
             self.data_ref[unique] += counts
 
         with nvtx.annotate("dumping", color='orange'):
@@ -330,9 +329,17 @@ class MemMailManager:
                 self.data_status[invalid_indices] = True
             
         with nvtx.annotate("update", color='orange'):
-            info = self.data_table[indices]
-            pos = info[:, 0] * self.num_slots_per_block + info[:, 1]
-            self.memory[pos] = data.to(self.pool.device)
+            # info = self.data_table[indices]
+            # pos = info[:, 0] * self.num_slots_per_block + info[:, 1]
+            # self.memory[pos] = data.to(self.pool.device)
+            
+            mem_manager_kernels.write_data_to_memory(
+                self.data_table,
+                indices,
+                data,
+                self.memory,
+                self.num_slots_per_block
+            )
             self.mem_time[indices] = time
         
     def check_data_valid(self, indices: torch.Tensor) -> torch.Tensor:
@@ -363,7 +370,7 @@ class MemMailManager:
         )
             # alloc = free_spaces[:indices.size(0)]
             # self.space_status[alloc[:, 0], alloc[:, 1]] = True
-            self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]   
+            # self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots_per_block +  alloc[:, 1]]   
          
         
         
@@ -480,9 +487,3 @@ if __name__ == "__main__":
                            torch.tensor([9], dtype=torch.int32, device='cuda'),
                            time=torch.tensor([0], dtype=torch.float32, device='cuda'),)
     manager.get_mailbox_data(torch.tensor([1, 2, 5, 8], dtype=torch.int32, device='cuda'))
-    print(manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda')))
-    
-    x = torch.tensor([2, 5, 3, 2, -1, 0, 0, 3], dtype=torch.int32, device='cuda')
-    uniq, count = mem_manager_kernels.unique_with_count(x, maxidx=6)
-    print("uniq:", uniq)
-    print("count:", count)
