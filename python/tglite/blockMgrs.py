@@ -318,7 +318,7 @@ class MemMailManager:
             catted = torch.cat((up_mailbox_nbr, up_mailbox_uniq))
             with nvtx.annotate("unique", color='green'):
                 unique, counts = torch.unique(catted, return_counts=True)      
-                print(uniq.shape[0])  
+                # print(uniq.shape[0])  
             self.data_ref[unique] += counts
 
         with nvtx.annotate("dumping", color='orange'):
