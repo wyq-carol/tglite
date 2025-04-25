@@ -1667,7 +1667,7 @@ class TGN(nn.Module):
                         mem = self.mem_cell(mail, mem)
                     with nvtx.annotate("update_mem_batch", color="blue"): # TODO
                         with torch.no_grad():
-                            self.ctx.manager_mem_mail.update_mem_batch(unique_nids, mem, unique_mail_ts, mailbox_uniq, mailbox_nbrs)
+                            self.ctx.manager_mem_mail.update_mem_batch(mailbox_ref_uniq, mailbox_ref_counts, unique_nids, mem, unique_mail_ts, mailbox_uniq, mailbox_nbrs)
                 
                 # with nvtx.annotate("update mem", color="purple"):
                 #     unique_mail_ts = g.mailbox.time[unique_nids] # on cpu

@@ -10,6 +10,7 @@
 #  version6 edition4 bug fix : alloc kernel bug
 #  version7 edition0 feat    : pre alloc for mem manager
 #  version7 edition1 feat    : update mem kernel fine tune
+#  version7 edition2 feat    : update mem offline
 ########################################################                             
 
 
@@ -289,7 +290,7 @@ class MemMailManager:
             
         return output
 
-    def update_mem_batch(self, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
+    def update_mem_batch(self, unique, counts, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
         """ update mem, if u dont tell me mailbox update info, i will conservatively dump to cache """
         valid_indices = indices
 
@@ -305,12 +306,12 @@ class MemMailManager:
                 valid_indices
             )
         with nvtx.annotate("unique2", color='blue'): 
-            catted = torch.cat((up_mailbox_nbr, up_mailbox_uniq))
-            with nvtx.annotate("unique", color='green'):
-                unique, counts = torch.unique(catted, return_counts=True)   
-                unique = unique.to(torch.int32)
-                counts = counts.to(torch.int32)    
-            # self.data_ref[unique] += counts
+            # catted = torch.cat((up_mailbox_nbr, up_mailbox_uniq))
+            # with nvtx.annotate("unique", color='green'):
+            #     unique, counts = torch.unique(catted, return_counts=True)   
+            #     unique = unique.to(torch.int32)
+            #     counts = counts.to(torch.int32)    
+            # # self.data_ref[unique] += counts
             mem_manager_kernels.add_counts(unique, counts, self.data_ref)
 
         with nvtx.annotate("dumping", color='orange'):

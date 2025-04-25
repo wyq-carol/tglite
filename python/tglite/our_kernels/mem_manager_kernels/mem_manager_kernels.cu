@@ -512,39 +512,41 @@ std::pair<torch::Tensor, torch::Tensor>
 unique_with_count(
     thrust::device_ptr<int> dev_ptr, 
     at::TensorOptions options,
-    int N) {
-
-    // int N = input_tensor.size(0);
-    // auto options = input_tensor.options();
-
+    int N) 
+{
     // 1. 排序 inplace
-    // auto input_ptr = thrust::device_pointer_cast(input_tensor.data_ptr<int>());
     thrust::sort(thrust::device, dev_ptr, dev_ptr + N);
 
-    // 2. 创建最大可能容量的输出 tensor
+    // 2. 创建 value 全 1 的 Tensor
+    torch::Tensor ones_tensor = torch::ones({N}, options);
+    auto value_ptr = thrust::device_pointer_cast(ones_tensor.data_ptr<int>());
+
+    // 3. 创建最大可能容量的输出 tensor
     torch::Tensor uniq_tensor = torch::empty({N}, options);
     torch::Tensor count_tensor = torch::empty({N}, options);
 
     auto uniq_ptr = thrust::device_pointer_cast(uniq_tensor.data_ptr<int>());
     auto count_ptr = thrust::device_pointer_cast(count_tensor.data_ptr<int>());
 
-    // 3. reduce_by_key
+    // 4. reduce_by_key
     auto new_end = thrust::reduce_by_key(
         thrust::device,
-        dev_ptr, dev_ptr + N,
-        thrust::make_constant_iterator(1),
+        dev_ptr,
+        dev_ptr + N,
+        value_ptr,
         uniq_ptr,
         count_ptr
     );
 
     int num_unique = new_end.first - uniq_ptr;
 
-    // 4. slice 出有效部分
+    // 5. slice 出有效部分
     torch::Tensor uniq_result = uniq_tensor.slice(0, 0, num_unique);
     torch::Tensor count_result = count_tensor.slice(0, 0, num_unique);
 
     return {uniq_result, count_result};
 }
+
 
 
 __global__ void pre_ref_update_kernel(
@@ -607,6 +609,100 @@ __global__ void fill_output_kernel(
 }
 
 
+// torch::Tensor dump_launcher(
+//     int Nid,
+//     torch::Tensor old_mailbox,
+//     torch::Tensor uniq,
+//     torch::Tensor nbr,
+//     torch::Tensor cache_ref,
+//     torch::Tensor data_ref,
+//     torch::Tensor valid_indicies
+// ) {
+
+//     int num_rows = uniq.size(0);
+//     int D = old_mailbox.size(1);
+//     auto options = torch::TensorOptions().dtype(torch::kInt32).device(old_mailbox.device());
+
+//     nvtxRangePush("Kernel Launch");
+//     auto extracted_rows_torch = torch::empty({num_rows * 2}, options);
+//     int* raw_ptr = extracted_rows_torch.data_ptr<int>();
+//     // thrust::device_vector<int> extracted_rows();
+//     int64_t size = num_rows * 2;
+//     thrust::device_ptr<int> dev_ptr(raw_ptr);
+
+//     int threads = 256;
+//     int blocks  = (num_rows * 2 + threads - 1) / threads;
+//     extract_rows_kernel<<<blocks, threads>>>(
+//         uniq.data_ptr<int>(),
+//         old_mailbox.data_ptr<int>(),
+//         raw_ptr,
+//         num_rows, D
+//     );
+
+//     auto [uniq_vec, count_vec] = unique_with_count(dev_ptr, options, size);
+//     nvtxRangePop(); // unnecessary malloc clear
+
+//     nvtxRangePush("ref up");
+//     blocks  = ((int)uniq_vec.size(0) + threads - 1) / threads;
+//     pre_ref_update_kernel<<<blocks, threads>>>(
+//     	old_mailbox.data_ptr<int>(),
+//         uniq_vec.data_ptr<int>(),
+//         count_vec.data_ptr<int>(),
+//         data_ref.data_ptr<int>(),
+//         cache_ref.data_ptr<int>(),
+//         Nid, (int)uniq_vec.size(0)
+//     );
+
+//     // preform valid_indices sort
+//     int N = valid_indicies.size(0);
+//     if (N == 0) {
+//         return torch::empty({0}, options);
+//     }
+//     nvtxRangePop();
+    
+
+//     thrust::device_ptr<int> ptr = thrust::device_pointer_cast(valid_indicies.data_ptr<int>());
+//     thrust::sort(thrust::device, ptr, ptr + valid_indicies.size(0));
+
+//     auto mask   = torch::empty({N}, options);
+//     auto prefix = torch::empty({N}, options);
+
+//     blocks = (N + threads - 1) / threads;
+
+//     make_mask_kernel<<<blocks, threads>>>(
+//         valid_indicies.data_ptr<int>(),
+//         data_ref.data_ptr<int>(),
+//         mask.data_ptr<int>(),
+//         N
+//     );
+
+//     // prefix sum
+//     thrust::device_ptr<int> mask_ptr(mask.data_ptr<int>());
+//     thrust::device_ptr<int> prefix_ptr(prefix.data_ptr<int>());
+//     thrust::exclusive_scan(thrust::device, mask_ptr, mask_ptr + N, prefix_ptr);
+
+//     // int total = mask_ptr[N - 1] + prefix_ptr[N - 1];  // 最后一个位置
+//     int last_mask = 0, last_prefix = 0;
+//     cudaMemcpy(&last_mask,   mask.data_ptr<int>()   + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+//     cudaMemcpy(&last_prefix, prefix.data_ptr<int>() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
+//     int total = last_mask + last_prefix;
+//     if (total == 0) {
+//         auto out = torch::empty({0}, options);
+//         return out;
+//     }
+
+//     auto output = torch::empty({total}, options);
+
+//     fill_output_kernel<<<blocks, threads>>>(
+//         valid_indicies.data_ptr<int>(),
+//         mask.data_ptr<int>(),
+//         prefix.data_ptr<int>(),
+//         output.data_ptr<int>(),
+//         N
+//     );
+
+//     return output;
+// }
 torch::Tensor dump_launcher(
     int Nid,
     torch::Tensor old_mailbox,
@@ -616,20 +712,20 @@ torch::Tensor dump_launcher(
     torch::Tensor data_ref,
     torch::Tensor valid_indicies
 ) {
-
     int num_rows = uniq.size(0);
     int D = old_mailbox.size(1);
     auto options = torch::TensorOptions().dtype(torch::kInt32).device(old_mailbox.device());
 
     nvtxRangePush("Kernel Launch");
-    auto extracted_rows_torch = torch::empty({num_rows * 2}, options);
+
+    // Step 1: 提取行
+    torch::Tensor extracted_rows_torch = torch::empty({num_rows * 2}, options);
     int* raw_ptr = extracted_rows_torch.data_ptr<int>();
-    // thrust::device_vector<int> extracted_rows();
-    int64_t size = num_rows * 2;
     thrust::device_ptr<int> dev_ptr(raw_ptr);
 
     int threads = 256;
     int blocks  = (num_rows * 2 + threads - 1) / threads;
+
     extract_rows_kernel<<<blocks, threads>>>(
         uniq.data_ptr<int>(),
         old_mailbox.data_ptr<int>(),
@@ -637,29 +733,39 @@ torch::Tensor dump_launcher(
         num_rows, D
     );
 
-    auto [uniq_vec, count_vec] = unique_with_count(dev_ptr, options, size);
-    nvtxRangePop();
+    // Step 2: 唯一值 + 计数
+    auto [uniq_vec, count_vec] = unique_with_count(dev_ptr, options, num_rows * 2);
 
-    blocks  = ((int)uniq_vec.size(0) + threads - 1) / threads;
+    nvtxRangePop();  // Kernel Launch 结束
+
+    // Step 3: 引用更新
+    nvtxRangePush("ref up");
+
+    int num_unique = uniq_vec.size(0);
+    blocks = (num_unique + threads - 1) / threads;
+
     pre_ref_update_kernel<<<blocks, threads>>>(
-    	old_mailbox.data_ptr<int>(),
+        old_mailbox.data_ptr<int>(),
         uniq_vec.data_ptr<int>(),
         count_vec.data_ptr<int>(),
         data_ref.data_ptr<int>(),
         cache_ref.data_ptr<int>(),
-        Nid, (int)uniq_vec.size(0)
+        Nid, num_unique
     );
 
-    // preform valid_indices sort
+    nvtxRangePop();  // 引用更新结束
+
+    // Step 4: 检查有效索引数量
     int N = valid_indicies.size(0);
     if (N == 0) {
         return torch::empty({0}, options);
     }
-    
 
+    // Step 5: 排序
     thrust::device_ptr<int> ptr = thrust::device_pointer_cast(valid_indicies.data_ptr<int>());
-    thrust::sort(thrust::device, ptr, ptr + valid_indicies.size(0));
+    thrust::sort(thrust::device, ptr, ptr + N);
 
+    // Step 6: 构造掩码和前缀和
     auto mask   = torch::empty({N}, options);
     auto prefix = torch::empty({N}, options);
 
@@ -672,23 +778,43 @@ torch::Tensor dump_launcher(
         N
     );
 
-    // prefix sum
-    thrust::device_ptr<int> mask_ptr(mask.data_ptr<int>());
-    thrust::device_ptr<int> prefix_ptr(prefix.data_ptr<int>());
-    thrust::exclusive_scan(thrust::device, mask_ptr, mask_ptr + N, prefix_ptr);
+    // 替代 thrust::exclusive_scan -> CUB::ExclusiveSum
+    {
+        int* mask_ptr = mask.data_ptr<int>();
+        int* prefix_ptr = prefix.data_ptr<int>();
 
-    // int total = mask_ptr[N - 1] + prefix_ptr[N - 1];  // 最后一个位置
+        void* d_temp_storage = nullptr;
+        size_t temp_storage_bytes = 0;
+
+        cub::DeviceScan::ExclusiveSum(
+            d_temp_storage, temp_storage_bytes,
+            mask_ptr, prefix_ptr, N
+        );
+
+        torch::Tensor cub_workspace = torch::empty(
+            {static_cast<long>(temp_storage_bytes)},
+            torch::TensorOptions().dtype(torch::kUInt8).device(options.device())
+        );
+        d_temp_storage = cub_workspace.data_ptr();
+
+        cub::DeviceScan::ExclusiveSum(
+            d_temp_storage, temp_storage_bytes,
+            mask_ptr, prefix_ptr, N
+        );
+    }
+
+    // Step 7: 计算总数
     int last_mask = 0, last_prefix = 0;
     cudaMemcpy(&last_mask,   mask.data_ptr<int>()   + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&last_prefix, prefix.data_ptr<int>() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
     int total = last_mask + last_prefix;
+
     if (total == 0) {
-        auto out = torch::empty({0}, options);
-        return out;
+        return torch::empty({0}, options);
     }
 
-    auto output = torch::empty({total}, options);
-
+    // Step 8: 生成输出
+    torch::Tensor output = torch::empty({total}, options);
     fill_output_kernel<<<blocks, threads>>>(
         valid_indicies.data_ptr<int>(),
         mask.data_ptr<int>(),
@@ -698,14 +824,6 @@ torch::Tensor dump_launcher(
     );
 
     return output;
-
-    // torch::Tensor out_uniq = torch::empty({(int)uniq_vec.size()}, options);
-
-    // cudaMemcpy(out_uniq.data_ptr<int>(), thrust::raw_pointer_cast(uniq_vec.data()), out_uniq.numel() * sizeof(int), cudaMemcpyDeviceToDevice);
-
-
-
-    // return out_uniq;
 }
 
 __global__ void check_valid_kernel(
