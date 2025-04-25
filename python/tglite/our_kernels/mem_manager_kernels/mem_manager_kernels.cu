@@ -541,8 +541,10 @@ unique_with_count(
     int num_unique = new_end.first - uniq_ptr;
 
     // 5. slice 出有效部分
+    nvtxRangePush("Slice");
     torch::Tensor uniq_result = uniq_tensor.slice(0, 0, num_unique);
     torch::Tensor count_result = count_tensor.slice(0, 0, num_unique);
+    nvtxRangePop();
 
     return {uniq_result, count_result};
 }
@@ -609,100 +611,6 @@ __global__ void fill_output_kernel(
 }
 
 
-// torch::Tensor dump_launcher(
-//     int Nid,
-//     torch::Tensor old_mailbox,
-//     torch::Tensor uniq,
-//     torch::Tensor nbr,
-//     torch::Tensor cache_ref,
-//     torch::Tensor data_ref,
-//     torch::Tensor valid_indicies
-// ) {
-
-//     int num_rows = uniq.size(0);
-//     int D = old_mailbox.size(1);
-//     auto options = torch::TensorOptions().dtype(torch::kInt32).device(old_mailbox.device());
-
-//     nvtxRangePush("Kernel Launch");
-//     auto extracted_rows_torch = torch::empty({num_rows * 2}, options);
-//     int* raw_ptr = extracted_rows_torch.data_ptr<int>();
-//     // thrust::device_vector<int> extracted_rows();
-//     int64_t size = num_rows * 2;
-//     thrust::device_ptr<int> dev_ptr(raw_ptr);
-
-//     int threads = 256;
-//     int blocks  = (num_rows * 2 + threads - 1) / threads;
-//     extract_rows_kernel<<<blocks, threads>>>(
-//         uniq.data_ptr<int>(),
-//         old_mailbox.data_ptr<int>(),
-//         raw_ptr,
-//         num_rows, D
-//     );
-
-//     auto [uniq_vec, count_vec] = unique_with_count(dev_ptr, options, size);
-//     nvtxRangePop(); // unnecessary malloc clear
-
-//     nvtxRangePush("ref up");
-//     blocks  = ((int)uniq_vec.size(0) + threads - 1) / threads;
-//     pre_ref_update_kernel<<<blocks, threads>>>(
-//     	old_mailbox.data_ptr<int>(),
-//         uniq_vec.data_ptr<int>(),
-//         count_vec.data_ptr<int>(),
-//         data_ref.data_ptr<int>(),
-//         cache_ref.data_ptr<int>(),
-//         Nid, (int)uniq_vec.size(0)
-//     );
-
-//     // preform valid_indices sort
-//     int N = valid_indicies.size(0);
-//     if (N == 0) {
-//         return torch::empty({0}, options);
-//     }
-//     nvtxRangePop();
-    
-
-//     thrust::device_ptr<int> ptr = thrust::device_pointer_cast(valid_indicies.data_ptr<int>());
-//     thrust::sort(thrust::device, ptr, ptr + valid_indicies.size(0));
-
-//     auto mask   = torch::empty({N}, options);
-//     auto prefix = torch::empty({N}, options);
-
-//     blocks = (N + threads - 1) / threads;
-
-//     make_mask_kernel<<<blocks, threads>>>(
-//         valid_indicies.data_ptr<int>(),
-//         data_ref.data_ptr<int>(),
-//         mask.data_ptr<int>(),
-//         N
-//     );
-
-//     // prefix sum
-//     thrust::device_ptr<int> mask_ptr(mask.data_ptr<int>());
-//     thrust::device_ptr<int> prefix_ptr(prefix.data_ptr<int>());
-//     thrust::exclusive_scan(thrust::device, mask_ptr, mask_ptr + N, prefix_ptr);
-
-//     // int total = mask_ptr[N - 1] + prefix_ptr[N - 1];  // 最后一个位置
-//     int last_mask = 0, last_prefix = 0;
-//     cudaMemcpy(&last_mask,   mask.data_ptr<int>()   + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
-//     cudaMemcpy(&last_prefix, prefix.data_ptr<int>() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
-//     int total = last_mask + last_prefix;
-//     if (total == 0) {
-//         auto out = torch::empty({0}, options);
-//         return out;
-//     }
-
-//     auto output = torch::empty({total}, options);
-
-//     fill_output_kernel<<<blocks, threads>>>(
-//         valid_indicies.data_ptr<int>(),
-//         mask.data_ptr<int>(),
-//         prefix.data_ptr<int>(),
-//         output.data_ptr<int>(),
-//         N
-//     );
-
-//     return output;
-// }
 torch::Tensor dump_launcher(
     int Nid,
     torch::Tensor old_mailbox,
@@ -721,7 +629,6 @@ torch::Tensor dump_launcher(
     // Step 1: 提取行
     torch::Tensor extracted_rows_torch = torch::empty({num_rows * 2}, options);
     int* raw_ptr = extracted_rows_torch.data_ptr<int>();
-    thrust::device_ptr<int> dev_ptr(raw_ptr);
 
     int threads = 256;
     int blocks  = (num_rows * 2 + threads - 1) / threads;
@@ -733,9 +640,16 @@ torch::Tensor dump_launcher(
         num_rows, D
     );
 
-    // Step 2: 唯一值 + 计数
-    auto [uniq_vec, count_vec] = unique_with_count(dev_ptr, options, num_rows * 2);
-
+    // Step 2: 唯一值 + 计数（使用 PyTorch 的 unique）
+    torch::Tensor uniq_vec, count_vec;
+    // std::tie(uniq_vec, count_vec) = torch::unique_consecutive(
+    //     extracted_rows_torch, /*return_inverse=*/false, /*return_counts=*/true
+    // );
+    std::tie(uniq_vec, std::ignore, count_vec) = torch::unique_consecutive(
+        extracted_rows_torch, /*return_inverse=*/false, /*return_counts=*/true
+    );
+    uniq_vec = uniq_vec.to(torch::kInt32);
+    count_vec = count_vec.to(torch::kInt32);
     nvtxRangePop();  // Kernel Launch 结束
 
     // Step 3: 引用更新
@@ -778,7 +692,7 @@ torch::Tensor dump_launcher(
         N
     );
 
-    // 替代 thrust::exclusive_scan -> CUB::ExclusiveSum
+    // 用 CUB 执行 prefix sum
     {
         int* mask_ptr = mask.data_ptr<int>();
         int* prefix_ptr = prefix.data_ptr<int>();

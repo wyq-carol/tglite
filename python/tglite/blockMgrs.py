@@ -11,6 +11,7 @@
 #  version7 edition0 feat    : pre alloc for mem manager
 #  version7 edition1 feat    : update mem kernel fine tune
 #  version7 edition2 feat    : update mem offline
+#  version7 edition3 feat    : final tune for unique
 ########################################################                             
 
 
@@ -292,8 +293,6 @@ class MemMailManager:
 
     def update_mem_batch(self, unique, counts, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
         """ update mem, if u dont tell me mailbox update info, i will conservatively dump to cache """
-        valid_indices = indices
-
         # check for dump to cache
         with nvtx.annotate("check dump", color='orange'): 
             dump_indices = mem_manager_kernels.dump_launcher(
@@ -303,7 +302,7 @@ class MemMailManager:
                 up_mailbox_nbr,
                 self.cache_ref,
                 self.data_ref,
-                valid_indices
+                indices
             )
         with nvtx.annotate("unique2", color='blue'): 
             # catted = torch.cat((up_mailbox_nbr, up_mailbox_uniq))
