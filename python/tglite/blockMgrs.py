@@ -12,6 +12,7 @@
 #  version7 edition1 feat    : update mem kernel fine tune
 #  version7 edition2 feat    : update mem offline
 #  version7 edition3 feat    : final tune for unique
+#  version8 : phase 1 end
 ########################################################                             
 
 
@@ -302,22 +303,31 @@ class MemMailManager:
                 up_mailbox_nbr,
                 self.cache_ref,
                 self.data_ref,
-                indices
+                indices,
+                unique,
+                counts
             )
-        with nvtx.annotate("unique2", color='blue'): 
-            # catted = torch.cat((up_mailbox_nbr, up_mailbox_uniq))
-            # with nvtx.annotate("unique", color='green'):
-            #     unique, counts = torch.unique(catted, return_counts=True)   
-            #     unique = unique.to(torch.int32)
-            #     counts = counts.to(torch.int32)    
-            # # self.data_ref[unique] += counts
-            mem_manager_kernels.add_counts(unique, counts, self.data_ref)
 
         with nvtx.annotate("dumping", color='orange'):
-            self.dump_to_cache(dump_indices)            
-        with nvtx.annotate("alloc", color='purple'):
-            if (dump_indices.size(0) > 0):
-                self.alloc_for_batch(dump_indices)
+            if (dump_indices.shape[0] > 0):
+                mem_manager_kernels.cache_dumper(
+                    dump_indices,
+                    self.data_table,
+                    self.data_ref,
+                    self.data_status,
+                    self.cache_table,
+                    self.cache_ref,
+                    self.mailbox_table
+                )        
+                with nvtx.annotate("alloc", color='purple'):
+                    mem_manager_kernels.launch_allocate_space_kernel(
+                dump_indices,
+                self.space_status, 
+                self.data_status,
+                self.space_table, 
+                self.data_table, 
+                self.num_slots_per_block
+            )
             
         with nvtx.annotate("update", color='orange'):
             mem_manager_kernels.write_data_to_memory(
@@ -327,6 +337,7 @@ class MemMailManager:
                 self.memory,
                 self.num_slots_per_block
             )
+        with nvtx.annotate("update time", color='orange'):
             self.mem_time[indices] = time
         
     def check_data_valid(self, indices: torch.Tensor) -> torch.Tensor:

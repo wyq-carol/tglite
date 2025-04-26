@@ -18,6 +18,21 @@
 
 
 using namespace std;
+
+
+
+/*
+get_mem_data_kernel:
+    input:
+        mem_slots: the number of mem per block
+        dim: the dimension of mem
+        indices: [0, nids) to index mem
+        data_table: the data table, Index from nid to block id and slot id
+        data_status: which nid is valid
+        memory: the whole memory of memory pool
+    output:
+        output: res torch tensor
+*/
 __global__ void get_mem_data_kernel(
     const int32_t mem_slots, const int32_t dim, 
     const int32_t *__restrict__ indices,       			// [K]
@@ -84,6 +99,18 @@ get_mem_data(const int32_t mem_slots,
 	}
 
 
+
+/*
+get_feat_data_kernel:
+    input:
+        num_slots: the number of feat per block
+        feature_size: the dimension of feat
+        indices: [0, nids) to index feat
+        data_table: the data table, Index from nid to block id and slot id
+        memory: the whole memory of feat pool
+    output:
+        output: res torch tensor
+*/
 __global__ void get_feat_kernel(
     const int32_t num_slots,
     const int32_t feature_size,
@@ -137,12 +164,12 @@ __global__ void get_mailbox_data_kernel(
     const float *__restrict__ efeat_memory,     // [P,dim]
     float *__restrict__ output)      // [K,2*dim]
 {
-	// 1) 哪个 X 索引：第 t = blockIdx.x
+	// 1) t = blockIdx.x
 	int32_t t = blockIdx.x;              
-	// 2) 取出要处理的行号 row = X[t]
+	// 2) one t means one index
 	int32_t row = indices[t];                  
 
-	// 3) 哪个任务：0 或 1, 0 为uniq , 1为nbr, 2 为nfeat
+	// 3) task for thread: 0 = uniq , 1 = nbr, 2 = nfeat
 	int32_t task, fid;
 	if (threadIdx.x < mem_dim) {
 		task = 0;
@@ -156,9 +183,7 @@ __global__ void get_mailbox_data_kernel(
 	}     
 
 	if (task != 2) {
-		// 5) 从 A[row,task] 拿到查表索引 aval
 		int32_t mailbox_ch = mailbox_table[row * 2 + task];
-		// 6) 根据 task 选表 B 或 C，取两个 int32_t 并相加
 		int32_t bid, sid;
 		int32_t memory_pos;  
 		if (mailbox_ch == -1) {
@@ -173,12 +198,8 @@ __global__ void get_mailbox_data_kernel(
 			sid = cache_table[mailbox_ch * 2 + 1];
 			memory_pos = bid * mem_slots + sid;
 		}
-
-		// 7) 从 D[sum_idx, fid] 读值
 		size_t offset = static_cast<size_t>(memory_pos) * mem_dim + fid;
 		float v = memory_pos == -1 ? 0.0 : memory[offset];
-
-		// 8) 写到 output[t, task*dim + fid]
 		size_t out_col = task * mem_dim + fid;
 		offset = static_cast<size_t>(t) * (2 * mem_dim + ef_dim) + out_col;
 		output[ offset ] = v;
@@ -195,7 +216,6 @@ __global__ void get_mailbox_data_kernel(
 		}
 		size_t offset = static_cast<size_t>(memory_pos) * ef_dim + fid;
 		float v = memory_pos == -1? 0.0 : efeat_memory[offset];
-		// 8) 写到 output[t, task*dim + fid]
 		size_t out_col = 2 * mem_dim + fid;
 		offset = static_cast<size_t>(t) * (2 * mem_dim + ef_dim) + out_col;
 		output[ offset ] = v;
@@ -224,10 +244,8 @@ get_mailbox_data(const int32_t mem_slots,
 	auto opts = torch::TensorOptions()
 					.dtype(torch::kFloat32)
 					.device(torch::kCUDA, memory.device().index());
-	// output ：N × (2*dim)
 	auto output = torch::empty({K, dim}, opts);
 
-	// launch kernel：grid=(N,2,1)， block=(dim,1,1)
 	get_mailbox_data_kernel<<<dim3(K, 1, 1), dim>>>(
 		K,  N,  mem_dim, ef_dim , mem_slots, ef_slots,
 		indices.data_ptr<int32_t>(), 
@@ -302,6 +320,32 @@ torch::Tensor get_top_n_true_indices(torch::Tensor mask, int n) {
     return output;
 }
 
+__global__ void add_counts_kernel(
+    const int* unique,       // shape (N,)
+    const int* counts,       // shape (N,)
+    int* data_ref,           // shape (任意，但 unique[i] 是 data_ref 的合法索引)
+    int N
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    int idx = unique[i];
+    data_ref[idx] += counts[i];  // 无需 atomic，因为 unique 中无重复
+}
+
+void add_counts(torch::Tensor unique, torch::Tensor counts, torch::Tensor data_ref) {
+    int N = unique.size(0);
+    int threads = 256;
+    int blocks = (N + threads - 1) / threads;
+
+    add_counts_kernel<<<blocks, threads>>>(
+        unique.data_ptr<int>(),
+        counts.data_ptr<int>(),
+        data_ref.data_ptr<int>(),
+        N
+    );
+}
+
 
 
 __device__ int32_t binary_search(const int32_t* A, int32_t size, int32_t target) {
@@ -368,7 +412,6 @@ __global__ void swap_mailbox_kernel(
 __global__ void eq_zero_mask_kernel(const int* input, int* mask, int N) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N) return;
-
     mask[i] = (input[i] == 0) ? 1 : 0;
 }
 
@@ -479,35 +522,6 @@ __global__ void extract_rows_kernel(
     output[tid] = input[src_row * D + col];  // 取出 old_mailbox[src_row, col]
 }
 
-// std::pair<thrust::device_vector<int>, thrust::device_vector<int>> unique_with_count_from_vec(
-//     // thrust::device_vector<int>& input_vec
-//     thrust::device_ptr<int> dev_ptr, int N
-// ) {
-//     // int N = input_vec.size();
-
-//     // sort
-//     // thrust::sort(thrust::device, input_vec.begin(), input_vec.end());
-//     thrust::sort(thrust::device, dev_ptr, dev_ptr + N);
-
-//     // output vectors
-//     thrust::device_vector<int> uniq_vec(N);
-//     thrust::device_vector<int> count_vec(N);
-
-//     auto new_end = thrust::reduce_by_key(
-//         thrust::device,
-//         dev_ptr,
-//         dev_ptr + N,
-//         thrust::make_constant_iterator(1),
-//         uniq_vec.begin(),
-//         count_vec.begin()
-//     );
-
-//     int num_uniq = new_end.first - uniq_vec.begin();
-//     uniq_vec.resize(num_uniq);
-//     count_vec.resize(num_uniq);
-//     return {uniq_vec, count_vec};
-// }
-
 std::pair<torch::Tensor, torch::Tensor> 
 unique_with_count(
     thrust::device_ptr<int> dev_ptr, 
@@ -610,6 +624,84 @@ __global__ void fill_output_kernel(
     }
 }
 
+at::Tensor select_and_sort(
+    const at::Tensor& valid_indices,  // int32 [N]
+    const at::Tensor& mask             // int32 [N]
+) {
+    auto options = torch::TensorOptions().dtype(torch::kInt32).device(mask.device());
+    int N = valid_indices.size(0);
+    at::Tensor output = at::empty({N}, options.dtype(at::kInt));
+
+    at::Tensor num_selected = at::empty({1}, options.dtype(at::kInt));
+
+    void* d_temp_storage_select = nullptr;
+    size_t temp_storage_bytes_select = 0;
+
+    // workspace
+    cub::DeviceSelect::Flagged(
+        /* d_temp_storage */ nullptr,
+        /* temp_storage_bytes */ temp_storage_bytes_select,
+        /* d_in */ valid_indices.data_ptr<int>(),
+        /* d_flags */ mask.data_ptr<int>(),
+        /* d_out */ output.data_ptr<int>(),
+        /* d_selected_count */ num_selected.data_ptr<int>(),
+        /* num_items */ static_cast<int>(N)
+    );
+
+    at::Tensor workspace_select = at::empty(
+        {static_cast<int64_t>((temp_storage_bytes_select + sizeof(int) - 1) / sizeof(int))},
+        options.dtype(at::kInt)
+    );
+    d_temp_storage_select = workspace_select.data_ptr();
+
+    // exe
+    cub::DeviceSelect::Flagged(
+        d_temp_storage_select,
+        temp_storage_bytes_select,
+        valid_indices.data_ptr<int>(),
+        mask.data_ptr<int>(),
+        output.data_ptr<int>(),
+        num_selected.data_ptr<int>(),
+        static_cast<int>(N)
+    );
+
+    int total = num_selected.item<int>();
+
+    // at::Tensor sorted_output = at::empty({total}, options.dtype(at::kInt));
+    // sorted_output.copy_(output.index({at::indexing::Slice(0, total)}));
+
+    void* d_temp_storage_sort = nullptr;
+    size_t temp_storage_bytes_sort = 0;
+
+    cub::DeviceRadixSort::SortKeys(
+        /* d_temp_storage */ nullptr,
+        /* temp_storage_bytes */ temp_storage_bytes_sort,
+        /* d_keys_in */ output.data_ptr<int>(),
+        /* d_keys_out */ output.data_ptr<int>(), 
+        /* num_items */ total,
+        /* begin_bit */ 0,
+        /* end_bit */ 32
+    );
+
+    at::Tensor workspace_sort = at::empty(
+        {static_cast<int64_t>((temp_storage_bytes_sort + sizeof(int) - 1) / sizeof(int))},
+        options.dtype(at::kInt)
+    );
+    d_temp_storage_sort = workspace_sort.data_ptr();
+
+    cub::DeviceRadixSort::SortKeys(
+        d_temp_storage_sort,
+        temp_storage_bytes_sort,
+        output.data_ptr<int>(),
+        output.data_ptr<int>(),
+        total,
+        0,
+        32
+    );
+
+    return output.index({at::indexing::Slice(0, total)});;
+}
+
 
 torch::Tensor dump_launcher(
     int Nid,
@@ -618,15 +710,15 @@ torch::Tensor dump_launcher(
     torch::Tensor nbr,
     torch::Tensor cache_ref,
     torch::Tensor data_ref,
-    torch::Tensor valid_indicies
+    torch::Tensor valid_indicies,
+    torch::Tensor unique,
+    torch::Tensor count
 ) {
     int num_rows = uniq.size(0);
     int D = old_mailbox.size(1);
     auto options = torch::TensorOptions().dtype(torch::kInt32).device(old_mailbox.device());
 
     nvtxRangePush("Kernel Launch");
-
-    // Step 1: 提取行
     torch::Tensor extracted_rows_torch = torch::empty({num_rows * 2}, options);
     int* raw_ptr = extracted_rows_torch.data_ptr<int>();
 
@@ -639,12 +731,7 @@ torch::Tensor dump_launcher(
         raw_ptr,
         num_rows, D
     );
-
-    // Step 2: 唯一值 + 计数（使用 PyTorch 的 unique）
     torch::Tensor uniq_vec, count_vec;
-    // std::tie(uniq_vec, count_vec) = torch::unique_consecutive(
-    //     extracted_rows_torch, /*return_inverse=*/false, /*return_counts=*/true
-    // );
     std::tie(uniq_vec, std::ignore, count_vec) = torch::unique_consecutive(
         extracted_rows_torch, /*return_inverse=*/false, /*return_counts=*/true
     );
@@ -652,9 +739,8 @@ torch::Tensor dump_launcher(
     count_vec = count_vec.to(torch::kInt32);
     nvtxRangePop();  // Kernel Launch 结束
 
-    // Step 3: 引用更新
-    nvtxRangePush("ref up");
 
+    nvtxRangePush("decrease ref");
     int num_unique = uniq_vec.size(0);
     blocks = (num_unique + threads - 1) / threads;
 
@@ -666,22 +752,13 @@ torch::Tensor dump_launcher(
         cache_ref.data_ptr<int>(),
         Nid, num_unique
     );
+    nvtxRangePop();
 
-    nvtxRangePop();  // 引用更新结束
 
-    // Step 4: 检查有效索引数量
+    nvtxRangePush("Make Mask");
     int N = valid_indicies.size(0);
-    if (N == 0) {
-        return torch::empty({0}, options);
-    }
-
-    // Step 5: 排序
-    thrust::device_ptr<int> ptr = thrust::device_pointer_cast(valid_indicies.data_ptr<int>());
-    thrust::sort(thrust::device, ptr, ptr + N);
-
-    // Step 6: 构造掩码和前缀和
     auto mask   = torch::empty({N}, options);
-    auto prefix = torch::empty({N}, options);
+    // auto prefix = torch::empty({N}, options);
 
     blocks = (N + threads - 1) / threads;
 
@@ -691,51 +768,13 @@ torch::Tensor dump_launcher(
         mask.data_ptr<int>(),
         N
     );
+    nvtxRangePop();
 
-    // 用 CUB 执行 prefix sum
-    {
-        int* mask_ptr = mask.data_ptr<int>();
-        int* prefix_ptr = prefix.data_ptr<int>();
+    nvtxRangePush("Select Flagged");
+    auto output = select_and_sort(valid_indicies, mask);
+    nvtxRangePop();
 
-        void* d_temp_storage = nullptr;
-        size_t temp_storage_bytes = 0;
-
-        cub::DeviceScan::ExclusiveSum(
-            d_temp_storage, temp_storage_bytes,
-            mask_ptr, prefix_ptr, N
-        );
-
-        torch::Tensor cub_workspace = torch::empty(
-            {static_cast<long>(temp_storage_bytes)},
-            torch::TensorOptions().dtype(torch::kUInt8).device(options.device())
-        );
-        d_temp_storage = cub_workspace.data_ptr();
-
-        cub::DeviceScan::ExclusiveSum(
-            d_temp_storage, temp_storage_bytes,
-            mask_ptr, prefix_ptr, N
-        );
-    }
-
-    // Step 7: 计算总数
-    int last_mask = 0, last_prefix = 0;
-    cudaMemcpy(&last_mask,   mask.data_ptr<int>()   + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&last_prefix, prefix.data_ptr<int>() + N - 1, sizeof(int), cudaMemcpyDeviceToHost);
-    int total = last_mask + last_prefix;
-
-    if (total == 0) {
-        return torch::empty({0}, options);
-    }
-
-    // Step 8: 生成输出
-    torch::Tensor output = torch::empty({total}, options);
-    fill_output_kernel<<<blocks, threads>>>(
-        valid_indicies.data_ptr<int>(),
-        mask.data_ptr<int>(),
-        prefix.data_ptr<int>(),
-        output.data_ptr<int>(),
-        N
-    );
+    add_counts(unique, count, data_ref);
 
     return output;
 }
@@ -937,28 +976,4 @@ void write_data_to_memory(
     );
 }
 
-__global__ void add_counts_kernel(
-    const int* unique,       // shape (N,)
-    const int* counts,       // shape (N,)
-    int* data_ref,           // shape (任意，但 unique[i] 是 data_ref 的合法索引)
-    int N
-) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) return;
 
-    int idx = unique[i];
-    data_ref[idx] += counts[i];  // 无需 atomic，因为 unique 中无重复
-}
-
-void add_counts(torch::Tensor unique, torch::Tensor counts, torch::Tensor data_ref) {
-    int N = unique.size(0);
-    int threads = 256;
-    int blocks = (N + threads - 1) / threads;
-
-    add_counts_kernel<<<blocks, threads>>>(
-        unique.data_ptr<int>(),
-        counts.data_ptr<int>(),
-        data_ref.data_ptr<int>(),
-        N
-    );
-}

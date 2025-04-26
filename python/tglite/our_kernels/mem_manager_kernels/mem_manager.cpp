@@ -49,7 +49,9 @@ torch::Tensor dump_launcher(
     torch::Tensor nbr,
     torch::Tensor cache_ref,
     torch::Tensor data_ref,
-    torch::Tensor valid_indicies
+    torch::Tensor valid_indicies,
+    torch::Tensor unique,
+    torch::Tensor counts
 );
 
 std::tuple<torch::Tensor, torch::Tensor> check_data_valid(
