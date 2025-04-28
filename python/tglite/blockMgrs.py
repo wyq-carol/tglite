@@ -12,7 +12,10 @@
 #  version7 edition1 feat    : update mem kernel fine tune
 #  version7 edition2 feat    : update mem offline
 #  version7 edition3 feat    : final tune for unique
-#  version8 : phase 1 end
+#  version8 : phase 1 end, this is a stable version
+
+#  version9 : phase 2 start
+#  version9 edition0 feat    : add edge manager demo , running ok
 ########################################################                             
 
 
@@ -185,6 +188,161 @@ class BlockManager:
         print(f"  Free Blocks: {self.num_blocks - torch.sum(self.space_status)}")
         print(f"  Used Blocks: {torch.sum(self.space_status)}")
         print(f"  Memory Usage: {torch.sum(self.space_status) * self.num_slots * self.feature_size / 1024**3:.2f} GB")
+
+class EdgeManager:
+    def __init__(self, pool: BlockPool, source_tensor: torch.Tensor, feature_size: int, max_idx: int, window_size = 6000 * 5, DEBUG = False):
+        self.DEBUG = DEBUG
+        if pool.block_elements % feature_size != 0:
+            raise ValueError(f"Feature size {feature_size} must divide block elements {pool.block_elements}")
+        self.pool = pool
+        self.feature_size = feature_size
+        self.num_slots = pool.block_elements // feature_size
+        self.num_blocks = math.ceil(window_size / self.num_slots)
+        
+        self.max_idx = max_idx
+        self.source_tensor = source_tensor
+        
+        self.window_size = window_size
+        
+        self.win_start = 0
+        self.win_end = window_size
+        
+        # a data table (N , 2), True mains valid
+        self.data_table = torch.zeros((self.window_size, 2), dtype=torch.int32, device=pool.device) 
+        
+        # a space table (block num , slot num), True mains used        
+        free_blocks = pool.allocate_block(self.num_blocks)
+        blockid = free_blocks.repeat_interleave(self.num_slots).to(torch.int32).to(self.pool.device) 
+        slotid = torch.tile(torch.arange(self.num_slots, dtype=torch.int32, device=self.pool.device), (self.num_blocks,)) 
+        self.space_table = torch.stack((blockid, slotid), dim=1).to(self.pool.device)
+        self.space_status = torch.zeros((self.num_blocks, self.num_slots), dtype=torch.bool, device=self.pool.device)
+        
+        self.memory = self.pool.memory.reshape(-1, self.feature_size)
+        
+        self.init_window_load()
+        
+    def init_window_load (self):
+        """ init window load """
+        self.alloc_for_batch(torch.arange(self.window_size, dtype=torch.int32, device=self.pool.device))
+        info = self.data_table
+        pos = info[:, 0] * self.num_slots + info[:, 1]
+        self.memory[pos] = self.source_tensor[self.win_start:self.win_end].to('cuda')
+        
+    def update_window (self, stride):
+        """ update window, stride is the num edges updated  """
+        self.win_start = self.win_start + stride
+        self.win_end = min(self.win_end + stride, self.max_idx)
+        self.window_size = self.win_end - self.win_start
+        self.data_table = torch.cat((self.data_table[stride:, :], self.data_table[:stride, :]), dim=0)
+        
+        info = self.data_table[self.window_size - stride:self.window_size]
+        pos = info[:, 0] * self.num_slots + info[:, 1]
+        self.memory[pos] = self.source_tensor[self.win_end - stride : self.win_end].to('cuda')
+        
+    def get_edata(self, indices: torch.Tensor) -> torch.Tensor:
+        """ get edata with index in indices """
+        res = torch.empty((indices.shape[0], self.feature_size), dtype=torch.float32, device=self.pool.device)
+        valid_mask = (indices >= self.win_start) & (indices < self.win_end)
+        valid_indices_idx = torch.nonzero(valid_mask, as_tuple=True)[0]
+        valid_indices = indices[valid_mask]
+        invalid_indices_idx = torch.nonzero(~valid_mask, as_tuple=True)[0]
+        invalid_indices = indices[~valid_mask].cpu()
+        block_ids = self.data_table[valid_indices - self.win_start, 0]
+        slot_ids = self.data_table[valid_indices - self.win_start, 1]
+        res[valid_indices_idx] = self.memory[block_ids * self.num_slots + slot_ids]
+        res[invalid_indices_idx] = self.source_tensor[invalid_indices].to('cuda')
+        
+        print("missed: ", invalid_indices)
+        return res
+
+        
+        
+
+    def next_power_size(self, new_need : int):
+        used_blocks = int(torch.ceil(self.space_status.sum() / self.num_slots).item())
+        return (1 << (math.ceil(math.log2(new_need / self.num_slots + used_blocks)))) 
+        
+    
+    def resize (self, need_slots: int):
+        """ resize block manager """
+        alloc_blocks = (self.next_power_size(need_slots) - self.num_blocks)
+        free_blocks = self.pool.allocate_block(alloc_blocks)
+        blockid = free_blocks.repeat_interleave(self.num_slots).to(torch.int32).to(self.pool.device) 
+        slotid = torch.tile(torch.arange(self.num_slots, dtype=torch.int32, device=self.pool.device), (alloc_blocks, )) 
+        
+        new_table = torch.stack((blockid, slotid), dim=1).to(self.pool.device)
+        self.space_table = torch.cat((self.space_table, new_table), dim=0)
+        
+        new_status = torch.zeros((free_blocks.size(0), self.num_slots), dtype=torch.bool, device=self.pool.device)
+        self.space_status = torch.cat((self.space_status, new_status), dim=0)
+    
+    def get_data_batch(self, indices: torch.Tensor) -> torch.Tensor:
+        return mem_manager_kernels.get_feat_data(self.num_slots, indices, self.data_table, self.memory)
+    
+    def update_data_batch(self, indices: torch.Tensor, data: torch.Tensor):
+        """ set data in batch """
+        invalid_indices = self.check_data_valid(indices)
+        if (invalid_indices.size(0) > 0):
+            # print(f"invalid indices: {invalid_indices}")
+            self.alloc_for_batch(invalid_indices)
+            self.data_status[invalid_indices] = True
+            
+        info = self.data_table[indices]
+        pos = info[:, 0] * self.num_slots + info[:, 1]
+        self.memory[pos] = data.to(self.pool.device)
+        
+    def check_data_valid(self, indices: torch.Tensor) -> torch.Tensor:
+        """ check if indices are valid , return invalid indices """
+        valid = self.data_status[indices]
+        invalid = indices[~valid]
+        return invalid
+    
+    def alloc_for_batch(self, indices: torch.Tensor):
+        """ waring : this is a !!!INSIDE API!!!, please make sure all the indices in data_table are valid, u can use check_data_valid to flit it """
+        # Step 1 : check fot valid space
+        free_spaces = self.free_spaces()
+        # Step 2 : alloc for indices
+        alloc = free_spaces[:indices.size(0)]
+        self.space_status[alloc[:, 0], alloc[:, 1]] = True
+        self.data_table[indices] = self.space_table[alloc[:, 0] * self.num_slots +  alloc[:, 1]]
+
+        
+    def free_spaces(self) -> torch.Tensor:
+        """ free spaces, its blockid """
+        free_space = (~self.space_status).nonzero().to(torch.int32)
+        return free_space
+        
+
+
+        
+    def copy_from_cpu_batch(self, indices: torch.Tensor):
+        """ copy data with index in indices from cpu to gpu """
+        if indices.is_cpu:
+            indices_gpu = indices.to(device='cuda')
+        else:
+            indices_gpu = indices
+            indices = indices_gpu.to(device='cpu')
+        need_to_load = self.check_data_valid(indices_gpu)
+        if (need_to_load.size(0) == 0):
+            # print(f"all have loaded, pass load phase") 
+            return 
+        self.alloc_for_batch(need_to_load)
+        # target_places = self.get_data_batch_forced(indices_gpu)
+        
+        info = self.data_table[indices_gpu]
+        pos = info[:, 0] * self.num_slots + info[:, 1]
+        self.memory[pos] = self.source_tensor[indices].to('cuda')
+        
+    def print_status(self):
+        print(f"BlockManager: ")
+        print(f"  Total Blocks: {self.num_blocks}")
+        print(f"  Block Elements: {self.num_slots}")
+        print(f"  Element Size: {self.feature_size} bytes")
+        print(f"  Total Memory: {self.num_blocks * self.num_slots * self.feature_size / 1024**3:.2f} GB")
+        print(f"  Free Blocks: {self.num_blocks - torch.sum(self.space_status)}")
+        print(f"  Used Blocks: {torch.sum(self.space_status)}")
+        print(f"  Memory Usage: {torch.sum(self.space_status) * self.num_slots * self.feature_size / 1024**3:.2f} GB")
+
 
 class MemMailManager:
     def __init__(self, pool: BlockPool, feature_size: int, max_idx: int, efeat_manager: BlockManager,init_blocks = 4000, blocks_for_cache = 1000, DEBUG = False):
@@ -404,7 +562,7 @@ class MemMailManager:
                                             self.data_table,
                                             self.cache_table,
                                             self.memory,
-                                            
+            
                                             self.mail_efeat_table,
                                             self.efeat_manager.data_table,
                                             self.efeat_manager.memory,
@@ -442,40 +600,34 @@ class MemMailManager:
 
 
 if __name__ == "__main__":
-    shared_pool = BlockPool(total_mem_gb=16, block_elements=10)
+    shared_pool = BlockPool(total_mem_gb=1, block_elements=4)
     
-    data_scale = 10
+    edata = torch.randn(20, 2)
+    print(edata)
+    efeat_manager = EdgeManager(shared_pool, edata, 2, 20, 9)
+    gotdata = efeat_manager.get_edata(torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])).cpu()
+    assert torch.allclose(gotdata, edata[:10])
     
-    efeat = torch.randn(data_scale, 10, dtype=torch.float32, device='cuda')
-    efeat_manager = BlockManager(shared_pool, efeat, 10, data_scale, 10, True)
-    efeat_manager.copy_from_cpu_batch(indices=torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=torch.int32, device='cuda'))
+    idx = torch.tensor([4, 5, 6, 1, 2, 3, 7, 8, 9, 10, 13, 11], dtype=torch.int32, device='cuda')
+    gotdata = efeat_manager.get_edata(idx).cpu()
+    assert torch.allclose(gotdata, edata[idx.cpu()])
     
-    manager = MemMailManager(shared_pool, 5, data_scale,efeat_manager,  15, 10, DEBUG=True)
-    manager.update_mem_batch(indices=torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=torch.int32, device='cuda'), 
-                             data=torch.randn(10, 5, dtype=torch.float32, device='cuda'),
-                             time=torch.tensor([0,1,2, 3, 4, 5, 6, 7, 8, 9], dtype=torch.float32, device='cuda'),
-                             up_mailbox_uniq=torch.tensor([1,5, 8], dtype=torch.int32, device='cuda'),
-                             up_mailbox_nbr=torch.tensor([2,8,9], dtype=torch.int32, device='cuda')) 
-    manager.update_mailbox(torch.tensor([1,5,8], dtype=torch.int32, device='cuda'),
-                           torch.tensor([2,8,9], dtype=torch.int32, device='cuda'),
-                           torch.tensor([0,1,2], dtype=torch.int32, device='cuda'),
-                           time=torch.tensor([0,1,2], dtype=torch.float32, device='cuda'),)
-    manager.update_mem_batch(indices=torch.tensor([0, 2, 8, 9], dtype=torch.int32, device='cuda'), 
-                             data=torch.randn(4, 5, dtype=torch.float32, device='cuda'),
-                             time=torch.tensor([0,1,2, 3], dtype=torch.float32, device='cuda'),
-                             up_mailbox_uniq=torch.tensor([1, 2], dtype=torch.int32, device='cuda'),
-                             up_mailbox_nbr=torch.tensor([5, 6], dtype=torch.int32, device='cuda')) 
-    manager.update_mailbox(torch.tensor([1, 2], dtype=torch.int32, device='cuda'), torch.tensor([5, 6], dtype=torch.int32, device='cuda'), 
-                           torch.tensor([0,1], dtype=torch.int32, device='cuda'),
-                           time=torch.tensor([0,1], dtype=torch.float32, device='cuda'),)
-    manager.get_mailbox_data(torch.tensor([1, 2, 5, 8], dtype=torch.int32, device='cuda'))
-    manager.update_mem_batch(indices=torch.tensor([], dtype=torch.int32, device='cuda'), 
-                             data=torch.randn(0, 5, dtype=torch.float32, device='cuda'),
-                             time=torch.tensor([], dtype=torch.float32, device='cuda'),
-                             up_mailbox_uniq=torch.tensor([8], dtype=torch.int32, device='cuda'),
-                             up_mailbox_nbr=torch.tensor([9], dtype=torch.int32, device='cuda')) 
-    manager.update_mailbox(torch.tensor([8], dtype=torch.int32, device='cuda'), torch.tensor([1], dtype=torch.int32, device='cuda'),
-                           torch.tensor([9], dtype=torch.int32, device='cuda'),
-                           time=torch.tensor([0], dtype=torch.float32, device='cuda'),)
-    manager.get_mailbox_data(torch.tensor([1, 2, 5, 8], dtype=torch.int32, device='cuda'))
-    print(manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda')))
+    efeat_manager.update_window(3)
+    idx = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], dtype=torch.int32, device='cuda')
+    gotdata = efeat_manager.get_edata(idx).cpu()
+    assert torch.allclose(gotdata, edata[idx.cpu()])
+    
+    efeat_manager.update_window(3)
+    idx = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], dtype=torch.int32, device='cuda')
+    gotdata = efeat_manager.get_edata(idx).cpu()
+    assert torch.allclose(gotdata, edata[idx.cpu()])
+
+    efeat_manager.update_window(3)
+    idx = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], dtype=torch.int32, device='cuda')
+    gotdata = efeat_manager.get_edata(idx).cpu()
+    assert torch.allclose(gotdata, edata[idx.cpu()])
+
+    efeat_manager.update_window(3)
+    idx = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], dtype=torch.int32, device='cuda')
+    gotdata = efeat_manager.get_edata(idx).cpu()
+    assert torch.allclose(gotdata, edata[idx.cpu()])
