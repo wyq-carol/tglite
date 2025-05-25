@@ -16,6 +16,7 @@
 
 ###  version10 : this is a refacted version  ###
 # version10 alpha1 : this is an early preview version
+# version10 alpha2 : fixed many bugs, can stably work
 ########################################################                             
 
 
@@ -199,6 +200,9 @@ class MemMailManager:
         
         self.efeat_manager = efeat_manager
         self.round = 1
+        
+        self.uniq_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
+        self.nbr_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
 
 
     def reset(self):
@@ -216,6 +220,9 @@ class MemMailManager:
 
         self.mem_time = torch.zeros(self.max_idx, dtype=torch.float32, device=self.pool.device)
         self.space_status[self.space_status == 1] = 0 
+        
+        self.uniq_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
+        self.nbr_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
         
     
     def resize (self, need_slots: int):
@@ -334,15 +341,29 @@ class MemMailManager:
         nbr_pos  = self.mailbox_table[uniq][:, 1]
         cache_mask = uniq_pos >= self.max_idx
         uniq_pos[cache_mask] = self.cache_table[uniq_pos[cache_mask] - self.max_idx]
+        cache_mask = (uniq_pos < self.max_idx) & (uniq_pos >= 0)
+        uniq_pos[cache_mask] = self.data_table[uniq_pos[cache_mask]]
         
         cache_mask = nbr_pos >= self.max_idx
         nbr_pos[cache_mask] = self.cache_table[nbr_pos[cache_mask] - self.max_idx]
+        cache_mask = (nbr_pos < self.max_idx) & (nbr_pos >= 0)
+        nbr_pos[cache_mask] = self.data_table[nbr_pos[cache_mask]]
         
-        uniq_data = self.memory[uniq_pos]
-        nbr_data  = self.memory[nbr_pos]
+        
+        uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+        nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+        uniq_data[uniq_pos >= 0] = self.memory[uniq_pos[uniq_pos >= 0]]
+        nbr_data[nbr_pos >= 0] = self.memory[nbr_pos[nbr_pos >= 0]]
+        
+        if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
+            raise Exception(f"wrong at {self.round}")
+        if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
+            raise Exception(f"wrong at {self.round}")
+        
         efeat = self.efeat_manager.get_data_batch(self.mail_efeat_table[uniq])
         
-        out = torch.stack((uniq_data, nbr_data, efeat), dim = 1)
+        out = torch.cat((uniq_data, nbr_data, efeat), dim=1)
+        
         return out
         
         
@@ -366,6 +387,33 @@ class MemMailManager:
         self.mailbox_table[uniq] = torch.stack((uniq, nbr), dim=1)
         self.mail_time[uniq] = time
         self.mail_efeat_table[uniq] = efeat
+        
+        
+        self.uniq_tester[uniq] = self.get_mem_data(uniq)
+        self.nbr_tester[uniq] = self.get_mem_data(nbr)
+        
+        uniq_pos = self.mailbox_table[uniq][:, 0]
+        nbr_pos  = self.mailbox_table[uniq][:, 1]
+        cache_mask = uniq_pos >= self.max_idx
+        uniq_pos[cache_mask] = self.cache_table[uniq_pos[cache_mask] - self.max_idx]
+        cache_mask = (uniq_pos < self.max_idx) & (uniq_pos >= 0)
+        uniq_pos[cache_mask] = self.data_table[uniq_pos[cache_mask]]
+        
+        cache_mask = nbr_pos >= self.max_idx
+        nbr_pos[cache_mask] = self.cache_table[nbr_pos[cache_mask] - self.max_idx]
+        cache_mask = (nbr_pos < self.max_idx) & (nbr_pos >= 0)
+        nbr_pos[cache_mask] = self.data_table[nbr_pos[cache_mask]]
+        
+        
+        uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+        nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+        uniq_data[uniq_pos >= 0] = self.memory[uniq_pos[uniq_pos >= 0]]
+        nbr_data[nbr_pos >= 0] = self.memory[nbr_pos[nbr_pos >= 0]]
+        
+        if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
+            raise Exception(f"wrong at {self.round}")
+        if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
+            raise Exception(f"wrong at {self.round}")
 
     def print_status(self):
         print(f"BlockManager: ")
@@ -405,12 +453,4 @@ if __name__ == "__main__":
     manager.update_mailbox(torch.tensor([2, 8], dtype=torch.int32, device='cuda'), torch.tensor([5, 6], dtype=torch.int32, device='cuda'), 
                            torch.tensor([5, 6], dtype=torch.int32, device='cuda'),
                            time=torch.tensor([2, 8], dtype=torch.float32, device='cuda'),)
-    # manager.update_mem_batch(indices=torch.tensor([], dtype=torch.int32, device='cuda'), 
-    #                          data=torch.randn(0, 5, dtype=torch.float32, device='cuda'),
-    #                          time=torch.tensor([], dtype=torch.float32, device='cuda'),
-    #                          up_mailbox_uniq=torch.tensor([8], dtype=torch.int32, device='cuda'),
-    #                          up_mailbox_nbr=torch.tensor([1], dtype=torch.int32, device='cuda'), unique=None, counts=None) 
-    # manager.update_mailbox(torch.tensor([8], dtype=torch.int32, device='cuda'), torch.tensor([1], dtype=torch.int32, device='cuda'),
-    #                        torch.tensor([0], dtype=torch.int32, device='cuda'),
-    #                        time=torch.tensor([0], dtype=torch.float32, device='cuda'))
-    print(manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda')))
+    manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda'))
