@@ -17,6 +17,7 @@
 ###  version10 : this is a refacted version  ###
 # version10 alpha1 : this is an early preview version
 # version10 alpha2 : fixed many bugs, can stably work
+# version10 beta1  : new algorithm applied
 ########################################################                             
 
 
@@ -43,7 +44,7 @@ class BlockPool:
         self.block_status = torch.zeros(self.total_blocks, dtype=torch.bool, device=self.device)
         
     def generate_mem_map(self, num_slots_per_block : int) -> torch.Tensor:
-        return torch.full((self.total_blocks * num_slots_per_block, ), fill_value=2, device=self.device, dtype=torch.int32)
+        return torch.full((self.total_blocks * num_slots_per_block, ), fill_value=-1, device=self.device, dtype=torch.int32)
 
     def allocate_block(self, num_needed : int) -> torch.Tensor:
         """ return block view and block_id """
@@ -163,7 +164,7 @@ class BlockManager:
 
 class MemMailManager:
     def __init__(self, pool: BlockPool, feature_size: int, max_idx: int, efeat_manager: BlockManager, init_blocks = 4000):
-        print("USING TORCH VERSION 10 alpha1")
+        print("USING TORCH VERSION 10 beta1")
         print(f'maxidx: {max_idx}')
         if pool.block_elements % feature_size != 0:
             raise ValueError(f"Feature size {feature_size} must divide block elements {pool.block_elements}")
@@ -173,15 +174,9 @@ class MemMailManager:
         self.max_idx = max_idx + 1
         self.cache_table_len = 2 * max_idx
 
-        
         # latest data table 
-        self.data_table = torch.zeros(self.max_idx, dtype=torch.int32, device=pool.device) 
+        self.data_table = torch.full((self.max_idx, ), -1,  dtype=torch.int32, device=pool.device) 
         self.data_status = torch.zeros(self.max_idx, dtype=torch.bool, device=pool.device) 
-        self.data_ref = torch.zeros(self.max_idx, dtype=torch.int32, device=pool.device)
-        
-        # cache table 
-        self.cache_table = torch.zeros(self.cache_table_len, dtype=torch.int32, device=pool.device)
-        self.cache_ref = torch.zeros(self.cache_table_len, dtype=torch.int32, device=pool.device)
         
         # mailbox table
         self.mailbox_table = torch.full((self.max_idx, 2), -1, dtype=torch.int32, device=pool.device)
@@ -207,19 +202,15 @@ class MemMailManager:
 
     def reset(self):
         """ reset mem manager """
-        self.data_table = torch.zeros((self.max_idx), dtype=torch.int32, device=self.pool.device)
+        self.data_table = torch.full((self.max_idx, ), -1,  dtype=torch.int32, device=self.pool.device)
         self.data_status = torch.zeros(self.max_idx, dtype=torch.bool, device=self.pool.device)
-        self.data_ref = torch.zeros(self.max_idx, dtype=torch.int32, device=self.pool.device)
-        
-        self.cache_table = torch.zeros((self.cache_table_len), dtype=torch.int32, device=self.pool.device)
-        self.cache_ref = torch.zeros(self.cache_table_len, dtype=torch.int32, device=self.pool.device)
         
         self.mailbox_table = torch.full((self.max_idx, 2), -1, dtype=torch.int32, device=self.pool.device)
         self.mail_time = torch.zeros(self.max_idx, dtype=torch.float32, device=self.pool.device)
         self.mail_efeat_table = torch.full((self.max_idx,), -1, dtype=torch.int32, device=self.pool.device)
 
         self.mem_time = torch.zeros(self.max_idx, dtype=torch.float32, device=self.pool.device)
-        self.space_status[self.space_status == 1] = 0 
+        self.space_status[self.space_status > 0] = 0 
         
         self.uniq_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
         self.nbr_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
@@ -240,35 +231,28 @@ class MemMailManager:
 
     def update_mem_batch(self, unique, counts, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
         """ update mem, if u dont tell me mailbox update info, i will conservatively dump to cache """
+        
+        old = self.data_table[indices]
+        self.space_status[old[old > 0]] -= 1
+        
         drop_lines_mailbox = self.mailbox_table[up_mailbox_uniq]
         mask = drop_lines_mailbox >= 0
         filtered = drop_lines_mailbox[mask]
         unique, counts = torch.unique(filtered, return_counts=True)
-        mask_valid = unique < self.max_idx
-        non_cached_indices = unique[mask_valid]
-        non_cached_counts = counts[mask_valid]
-        cached_indices = unique[~mask_valid] - self.max_idx
-        cached_counts = counts[~mask_valid]
-        self.data_ref[non_cached_indices] -= non_cached_counts.to(torch.int32)
-        self.cache_ref[cached_indices] -= cached_counts.to(torch.int32)
+        self.space_status[unique] -= counts
         
-        free_indices = cached_indices[self.cache_ref[cached_indices] == 0]
-        free_pos = self.cache_table[free_indices]
-        self.space_status[free_pos] = 0
         
-        dump_indices = indices[self.data_ref[indices] > 0]
+        tobe_replaced_slots = self.data_table[indices]
+        has_ref = self.space_status[tobe_replaced_slots] > 0
+        tobe_replaced_indices_pos = has_ref.nonzero(as_tuple=True)[0]
+        tobe_replaced_indices = indices[tobe_replaced_indices_pos]
+        self.data_status[tobe_replaced_indices] = False
+        self.data_table[tobe_replaced_indices] = -1
         
-        dump_indices = torch.sort(dump_indices).values
+        old = self.data_table[indices]
+        self.space_status[old[old > 0]] += 1
+        
 
-        if (self.cache_ref < 0).sum().item() != 0:
-            print(f"round {self.round}")
-            print(f"wrong : {self.cache_ref[cached_indices]}")
-            exit()
-
-        with nvtx.annotate("dumping", color='orange'):
-            self.dump_to_cache(dump_indices)     
-            unique, counts = torch.unique(torch.cat((up_mailbox_nbr, up_mailbox_uniq)), return_counts=True)        
-            self.data_ref[unique] += counts       
         with nvtx.annotate("check", color='purple'):
             invalid_indices, _ = self.check_data_valid(indices)
         with nvtx.annotate("alloc", color='purple'):
@@ -276,17 +260,39 @@ class MemMailManager:
                 # print(f"invalid indices: {invalid_indices}")
                 self.alloc_for_batch(invalid_indices)
                 self.data_status[invalid_indices] = True
+                
+        unique, counts = torch.unique(torch.cat((up_mailbox_uniq, up_mailbox_nbr)), return_counts=True)
+        slot_idx = self.data_table[unique]
+        mask = slot_idx >= 0
+        self.space_status[slot_idx[mask]] += counts[mask]
             
         with nvtx.annotate("update", color='orange'):
             pos = self.data_table[indices]
             self.memory[pos] = data.to(self.pool.device)
             self.mem_time[indices] = time
-        cache_usage = (self.cache_ref > 0).sum().item()
-        mem_usage = (self.data_status > 0).sum().item()
-        sum_usage = cache_usage + mem_usage
-        with open("output.txt", "a") as f:
-            self.round = self.round + 1
-            print(f"mem_mailbox usage in [round {self.round}] : [{sum_usage}]", file=f, flush=True)
+            
+        uniq = up_mailbox_uniq
+        nbr = up_mailbox_nbr
+        uniq_pos = self.data_table[uniq]
+        nbr_pos  = self.data_table[nbr]
+        self.mailbox_table[uniq] = torch.stack((uniq_pos, nbr_pos), dim=1)
+
+        self.uniq_tester[uniq] = self.get_mem_data(uniq)
+        self.nbr_tester[uniq] = self.get_mem_data(nbr)
+            
+        uniq_pos = self.mailbox_table[uniq][:, 0]
+        nbr_pos  = self.mailbox_table[uniq][:, 1]
+        uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+        nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+        uniq_data[uniq_pos >= 0] = self.memory[uniq_pos[uniq_pos >= 0]]
+        nbr_data[nbr_pos >= 0] = self.memory[nbr_pos[nbr_pos >= 0]]
+        
+        if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
+            raise Exception(f"wrong at {self.round}")
+        if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
+            raise Exception(f"wrong at {self.round}")
+        
+        self.round += 1
         
         
         
@@ -309,46 +315,11 @@ class MemMailManager:
         self.space_status[alloc] = 1
         self.data_table[indices] = alloc
         
-        
-    def dump_to_cache(self, dump_indices:torch.Tensor)->torch.Tensor:
-        """ waring : this is a !!!INSIDE API!!! """
-        # check for cache empty spaces
-        if (dump_indices.shape[0] == 0):
-            return
-        free_cache_slots = (self.cache_ref == 0).nonzero(as_tuple=True)[0].to(torch.int32)
-        alloc = free_cache_slots[:dump_indices.size(0)]
-        
-        # update cache table
-        self.data_status[dump_indices] = False
-        self.cache_table[alloc] = self.data_table[dump_indices]
-        self.cache_ref[alloc] = self.data_ref[dump_indices]
-        self.data_ref[dump_indices] = 0
-            
-        with nvtx.annotate("main body", color = "yellow"):
-            flat = self.mailbox_table.flatten()
-            idx = torch.bucketize(flat, dump_indices, right=False)
-            valid_idx = idx < dump_indices.size(0)
-            matched = torch.zeros_like(flat, dtype=torch.bool)
-            matched[valid_idx] = flat[valid_idx] == dump_indices[idx[valid_idx]]
-            flat[matched] = alloc[idx[matched]] + self.max_idx
-            table_replaced = flat.view_as(self.mailbox_table)
-            self.mailbox_table = table_replaced
-        
 
     def get_mailbox_data(self, uniq: torch.Tensor)->torch.Tensor:
         """ get mailbox data """
         uniq_pos = self.mailbox_table[uniq][:, 0]
         nbr_pos  = self.mailbox_table[uniq][:, 1]
-        cache_mask = uniq_pos >= self.max_idx
-        uniq_pos[cache_mask] = self.cache_table[uniq_pos[cache_mask] - self.max_idx]
-        cache_mask = (uniq_pos < self.max_idx) & (uniq_pos >= 0)
-        uniq_pos[cache_mask] = self.data_table[uniq_pos[cache_mask]]
-        
-        cache_mask = nbr_pos >= self.max_idx
-        nbr_pos[cache_mask] = self.cache_table[nbr_pos[cache_mask] - self.max_idx]
-        cache_mask = (nbr_pos < self.max_idx) & (nbr_pos >= 0)
-        nbr_pos[cache_mask] = self.data_table[nbr_pos[cache_mask]]
-        
         
         uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
         nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
@@ -361,7 +332,6 @@ class MemMailManager:
             raise Exception(f"wrong at {self.round}")
         
         efeat = self.efeat_manager.get_data_batch(self.mail_efeat_table[uniq])
-        
         out = torch.cat((uniq_data, nbr_data, efeat), dim=1)
         
         return out
@@ -384,36 +354,16 @@ class MemMailManager:
 
     def update_mailbox(self, uniq: torch.Tensor, nbr: torch.Tensor, efeat: torch.Tensor, time: torch.Tensor):
         """ update mailbox """
-        self.mailbox_table[uniq] = torch.stack((uniq, nbr), dim=1)
+        uniq_pos = self.data_table[uniq]
+        nbr_pos  = self.data_table[nbr]
+        self.mailbox_table[uniq] = torch.stack((uniq_pos, nbr_pos), dim=1)
         self.mail_time[uniq] = time
         self.mail_efeat_table[uniq] = efeat
         
         
-        self.uniq_tester[uniq] = self.get_mem_data(uniq)
-        self.nbr_tester[uniq] = self.get_mem_data(nbr)
+        # self.uniq_tester[uniq] = self.get_mem_data(uniq)
+        # self.nbr_tester[uniq] = self.get_mem_data(nbr)
         
-        uniq_pos = self.mailbox_table[uniq][:, 0]
-        nbr_pos  = self.mailbox_table[uniq][:, 1]
-        cache_mask = uniq_pos >= self.max_idx
-        uniq_pos[cache_mask] = self.cache_table[uniq_pos[cache_mask] - self.max_idx]
-        cache_mask = (uniq_pos < self.max_idx) & (uniq_pos >= 0)
-        uniq_pos[cache_mask] = self.data_table[uniq_pos[cache_mask]]
-        
-        cache_mask = nbr_pos >= self.max_idx
-        nbr_pos[cache_mask] = self.cache_table[nbr_pos[cache_mask] - self.max_idx]
-        cache_mask = (nbr_pos < self.max_idx) & (nbr_pos >= 0)
-        nbr_pos[cache_mask] = self.data_table[nbr_pos[cache_mask]]
-        
-        
-        uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
-        nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
-        uniq_data[uniq_pos >= 0] = self.memory[uniq_pos[uniq_pos >= 0]]
-        nbr_data[nbr_pos >= 0] = self.memory[nbr_pos[nbr_pos >= 0]]
-        
-        if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
-            raise Exception(f"wrong at {self.round}")
-        if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
-            raise Exception(f"wrong at {self.round}")
 
     def print_status(self):
         print(f"BlockManager: ")
@@ -453,4 +403,12 @@ if __name__ == "__main__":
     manager.update_mailbox(torch.tensor([2, 8], dtype=torch.int32, device='cuda'), torch.tensor([5, 6], dtype=torch.int32, device='cuda'), 
                            torch.tensor([5, 6], dtype=torch.int32, device='cuda'),
                            time=torch.tensor([2, 8], dtype=torch.float32, device='cuda'),)
+    manager.update_mem_batch(indices=torch.tensor([0, 2], dtype=torch.int32, device='cuda'), 
+                             data=torch.randn(2, 5, dtype=torch.float32, device='cuda'),
+                             time=torch.tensor([0, 2], dtype=torch.float32, device='cuda'),
+                             up_mailbox_uniq=torch.tensor([0], dtype=torch.int32, device='cuda'),
+                             up_mailbox_nbr=torch.tensor([2], dtype=torch.int32, device='cuda'), unique=None, counts=None) 
+    manager.update_mailbox(torch.tensor([0], dtype=torch.int32, device='cuda'), torch.tensor([2], dtype=torch.int32, device='cuda'), 
+                           torch.tensor([2], dtype=torch.int32, device='cuda'),
+                           time=torch.tensor([0], dtype=torch.float32, device='cuda'),)
     manager.get_mailbox_data(torch.tensor([3], dtype=torch.int32, device='cuda'))
