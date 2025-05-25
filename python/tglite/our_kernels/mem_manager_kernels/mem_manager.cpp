@@ -1,5 +1,7 @@
 #include <torch/types.h>
 #include <torch/torch.h>
+#include <torch/extension.h>
+#include <pybind11/pybind11.h>
 #include <vector>        
 
 torch::Tensor

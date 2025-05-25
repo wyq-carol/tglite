@@ -11,7 +11,7 @@ from tgn import TGN
 import nvtx
 from tglite.gpu_mem_track import *
 import tglite.config
-from tglite.blockMgrs import *
+from tglite.blockMgrs_torch import *
 # from tglite.blockMgrsv4 import *
 # from tglite.blockMgrs import *
 import pandas as pd
@@ -118,7 +118,10 @@ if __name__ == "__main__":
 
     if tglite.config.TEST_BLKM:
         # TODO A100 40G 目前只支持efeat_dim = 172
-        shared_pool = BlockPool(total_mem_gb=16, block_elements=4300)
+        if DATA in ['wiki-talk']:
+            shared_pool = BlockPool(total_mem_gb=16, block_elements=4300)
+        elif DATA in ['lastfm']:
+            shared_pool = BlockPool(total_mem_gb=16, block_elements=3200)
     
         # manager_nfeat = BlockManager(shared_pool, feature_size=100, max_manager_index=g.num_nodes())
         # manager_efeat = BlockManager(shared_pool, feature_size=172, max_manager_index=g.num_edges())
@@ -139,12 +142,12 @@ if __name__ == "__main__":
         elif DATA in ['wiki-talk', 'stackoverflow']:
             edge_feats = torch.randn(g.num_edges(), 172, dtype=torch.float32)
 
-        if DATA in ['wiki-talk']:
+        if DATA in ['wiki-talk', 'lastfm', 'stackoverflow']:
             node_feats = torch.randn(g.num_nodes(), 100, dtype=torch.float32)
         elif Path(os.path.join(DATA_PATH, f'/home/volume/{DATA}/node_features.pt')).exists():
             node_feats = torch.load(os.path.join(DATA_PATH, f'/home/volume/{DATA}/node_features.pt'))
             node_feats = node_feats.type(torch.float32)
-        elif DATA in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk', 'stackoverflow']:
+        elif DATA in ['wiki', 'mooc', 'reddit', 'lastfm', 'wiki-talk']:
             # node_feats = torch.randn(g.num_nodes(), edge_feats.shape[1], dtype=torch.float32)
             node_feats = torch.randn(g.num_nodes(), 100, dtype=torch.float32)
 
@@ -159,10 +162,16 @@ if __name__ == "__main__":
 
         import math
         # TODO A100 40G 目前只支持efeat_dim = 172
-        manager_nfeat = BlockManager(shared_pool, node_feats, feature_size=100, max_idx=g.num_nodes(), init_blocks=math.ceil(g.num_nodes()/(4300/100)))
-        manager_nfeat.copy_from_cpu_batch(indices=torch.arange(g.num_nodes(), dtype=torch.int32, device='cuda'))
-        manager_efeat = BlockManager(shared_pool, edge_feats, feature_size=172, max_idx=g.num_edges(), init_blocks=math.ceil(g.num_edges()/(4300/172)))
-        manager_efeat.copy_from_cpu_batch(indices=torch.arange(g.num_edges(), dtype=torch.int32, device='cuda'))
+        if DATA in ['wiki-talk']:
+            manager_nfeat = BlockManager(shared_pool, node_feats, feature_size=100, max_idx=g.num_nodes(), init_blocks=math.ceil(g.num_nodes()/(4300/100)))
+            manager_nfeat.copy_from_cpu_batch(indices=torch.arange(g.num_nodes(), dtype=torch.int32, device='cuda'))
+            manager_efeat = BlockManager(shared_pool, edge_feats, feature_size=172, max_idx=g.num_edges(), init_blocks=math.ceil(g.num_edges()/(4300/172)))
+            manager_efeat.copy_from_cpu_batch(indices=torch.arange(g.num_edges(), dtype=torch.int32, device='cuda'))
+        elif DATA in ['lastfm']:
+            manager_nfeat = BlockManager(shared_pool, node_feats, feature_size=100, max_idx=g.num_nodes(), init_blocks=math.ceil(g.num_nodes()/(3200/100)))
+            manager_nfeat.copy_from_cpu_batch(indices=torch.arange(g.num_nodes(), dtype=torch.int32, device='cuda'))
+            manager_efeat = BlockManager(shared_pool, edge_feats, feature_size=128, max_idx=g.num_edges(), init_blocks=math.ceil(g.num_edges()/(3200/128)))
+            manager_efeat.copy_from_cpu_batch(indices=torch.arange(g.num_edges(), dtype=torch.int32, device='cuda'))
 
         # manager_nfeat.init(torch.arange(g.num_nodes()), node_feats)
         # manager_efeat.init(torch.arange(g.num_edges()), edge_feats)
@@ -177,7 +186,10 @@ if __name__ == "__main__":
             g._mem.move_to(device)
             g._mailbox.move_to(device)
 
-        manager_mem_mail = MemMailManager(shared_pool, DIM_EMBED, g.num_nodes(), manager_efeat, math.ceil(g.num_nodes()/(4300/100)) * 3, g.num_nodes())
+        if DATA in ['wiki-talk']:
+            manager_mem_mail = MemMailManager(shared_pool, DIM_EMBED, g.num_nodes(), manager_efeat, math.ceil(g.num_nodes()/(4300/100)) * 3)
+        elif DATA in ['lastfm']:
+            manager_mem_mail = MemMailManager(shared_pool, DIM_EMBED, g.num_nodes(), manager_efeat, math.ceil(g.num_nodes()/(3200/100)) * 20)
 
     elif tglite.config.PERF_CEIL: # 结合ON_HETER 和OFFLINE SAMPLE
         support.load_feats(g, "cpu", DATA, DATA_PATH) # feat on cpu

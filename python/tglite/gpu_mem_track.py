@@ -30,11 +30,13 @@ def add_mailbox_upd_batch_eval(item):
 
 def get_mailbox_upd_batchs(log_dir, log_name):
     file_path = os.path.join(log_dir, f"TRAIN_mailboxUpdBatchs_{log_name}.pt")
+    print(f"file_path {file_path}")
     print(f"len(mailbox_upd_batchs) {len(mailbox_upd_batchs)}")
     torch.save(mailbox_upd_batchs, file_path)
 
 def get_mailbox_upd_batchs_eval(log_dir, log_name):
     file_path = os.path.join(log_dir, f"EVAL_mailboxUpdBatchs_{log_name}.pt")
+    print(f"file_path {file_path}")
     print(f"len(mailbox_upd_batchs_eval) {len(mailbox_upd_batchs_eval)}")
     torch.save(mailbox_upd_batchs_eval, file_path)
 

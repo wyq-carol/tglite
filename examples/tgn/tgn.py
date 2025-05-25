@@ -1334,6 +1334,7 @@ class TGN(nn.Module):
             else:
                 file_path = os.path.join(tglite.config.log_dir, f"tglake_res_mailboxUpd/EVAL_mailboxUpdBatchs_{tglite.config.log_name}.pt")
             self._mailboxUpd_samples = torch.load(file_path)
+            # import pdb;pdb.set_trace()
 
     def _init_samples0_online_TEST_BLKM(self, batch):
         print(f"_init_samples0_online_TEST_BLKM")
@@ -1422,6 +1423,11 @@ class TGN(nn.Module):
         # reduce_idx = torch.tensor(b_dstindex).int()
         reduce_idx = b_dstindex.clone().detach().int()
 
+        # TODO refine sampling
+        # return _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, time_delta, \
+        #         unique_eids, inverse_eids, unique_nids, \
+        #         unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
+        #         Q_node_idx, reindex, reduce_idx, b_num_src, b_num_dst
         return _inv_idx, b_dstnodes, b_dsttimes, b_dstindex, b_srcnodes, b_eids, b_ets, unique_time_delta, inverse_time_delta, \
                 unique_eids, inverse_eids, unique_nids, \
                 unique_dstnodes, inverse_dstnodes, unique_srcnodes, inverse_srcnodes, \
@@ -1622,6 +1628,8 @@ class TGN(nn.Module):
                                         b2_unique_eids.to("cuda"), b2_inverse_eids.to("cuda"), b2_unique_nids.to("cuda"), \
                                         b2_unique_dstnodes.to("cuda"), b2_inverse_dstnodes.to("cuda"), b2_unique_srcnodes.to("cuda"), b2_inverse_srcnodes.to("cuda"), \
                                         b2_Q_node_idx.to("cuda"), b2_reindex.to("cuda"), b2_reduce_idx.to("cuda"), b2_num_src, b2_num_dst
+                    
+                    
                     self.curr_mailboxUpd = mailbox_ref_uniq.to("cuda"), mailbox_ref_counts.to("cuda"), mailbox_uniq.to("cuda"), mailbox_nbrs.to("cuda"), mailbox_ets.to("cuda"), mailbox_eid.to("cuda")
                     TEST_BLKM_preload_sampling_event = torch.cuda.Event()
                     TEST_BLKM_preload_sampling_event.record()
@@ -1665,8 +1673,10 @@ class TGN(nn.Module):
                     
                     with nvtx.annotate("nn.grucell", color="blue"): # TODO
                         mem = self.mem_cell(mail, mem)
+                    # print(f"batch._b_id {batch._b_id}")
                     with nvtx.annotate("update_mem_batch", color="blue"): # TODO
                         with torch.no_grad():
+                            # import pdb;pdb.set_trace()
                             self.ctx.manager_mem_mail.update_mem_batch(mailbox_ref_uniq, mailbox_ref_counts, unique_nids, mem, unique_mail_ts, mailbox_uniq, mailbox_nbrs)
                 
                 # with nvtx.annotate("update mem", color="purple"):

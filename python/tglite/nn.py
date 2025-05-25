@@ -711,6 +711,14 @@ class TemporalAttnLayer_0_fusion1_testblkm(torch.nn.Module): # our tmpAttnLayer
 
     # ! 先以压缩为核心写kernel，即相同的只存储一次
     def forward(self, num_src, num_dst, reduce_idx, reindex, Q_node_idx, nfeat, mem, unique_dstnodes, node_dst_inverse, unique_srcnodes, Z_node_inverse, efeat_unique, Z_edge_inverse, _unique_time_delta, Z_time_inverse) -> Tensor:
+        # TODO
+        # torch.save((num_src, num_dst, reduce_idx, reindex, Q_node_idx, nfeat, mem, unique_dstnodes, node_dst_inverse, unique_srcnodes, Z_node_inverse, efeat_unique, Z_edge_inverse, _unique_time_delta, Z_time_inverse), "/home/tglite/examples/exp/PULSE/4.TGN_operators/wiki-talk-bs6000-layer1/input.pt")
+        # import pdb;pdb.set_trace()
+        # print(f"self._dstindex {self._dstindex.shape}")
+
+        # torch.save(self._dstindex, "/home/tglite/examples/exp/PULSE/4.TGN_operators/wiki-talk-bs6000-layer1/_dstindex.pt")
+        # exit()
+        
         # TODO _g_dstindex 可以进一步预处理
         ## fusion0
         # with nvtx.annotate("fusion_0", color="blue"):
