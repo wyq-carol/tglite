@@ -5,31 +5,25 @@
 #include <vector>        
 
 torch::Tensor
-get_mem_data(const int mem_slots,
+get_data(
     torch::Tensor indices,
     torch::Tensor data_table,
-    torch::Tensor data_status,
+    torch::Tensor space_table,
     torch::Tensor memory
     );
 
 torch::Tensor
-get_feat_data(const int num_slots, torch::Tensor indices,
-        torch::Tensor data_table, torch::Tensor memory);
+concat_mailbox(
+	torch::Tensor indices,
+	torch::Tensor mailbox_table, 
+    torch::Tensor mem_space_table,
+	torch::Tensor mem_memory,
 
-
-torch::Tensor
-get_mailbox_data(const int mem_slots,
-	const int ef_slots,
-    torch::Tensor indices,
-    torch::Tensor mailbox_table, 
-    torch::Tensor data_table,
-    torch::Tensor cache_table,
-    torch::Tensor memory,
-
-    torch::Tensor mailbox_efeat,
-    torch::Tensor efeat_data_table,
-    torch::Tensor efeat_memory
-    );
+	torch::Tensor mailbox_efeat,
+	torch::Tensor efeat_data_table,
+    torch::Tensor efeat_space_table,
+	torch::Tensor efeat_memory
+	);
 
 void cache_dumper(
     // torch::Tensor cache_mask,
@@ -84,17 +78,8 @@ void add_counts(torch::Tensor unique, torch::Tensor counts, torch::Tensor data_r
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-    m.def("get_mem_data", &get_mem_data, "Get mem data");
-    m.def("get_feat_data", &get_feat_data, "Get Data Batch");
-    m.def("get_mailbox_data", &get_mailbox_data, "Get mailbox data");
-    m.def("cache_dumper", &cache_dumper, "Dump cache");
-    // m.def("unique_with_count", &unique_with_count, "Unique with count (CUDA)");
-    m.def("dump_launcher", &dump_launcher, "Dump launcher");
-    m.def("check_data_valid", &check_data_valid, "Check data valid");
-    m.def("launch_allocate_space_kernel", &launch_allocate_space_kernel, "Launch allocate space kernel");
-    m.def("write_data_to_memory", &write_data_to_memory, "Write data to memory");
-    m.def("get_top_n_true_indices", &get_top_n_true_indices, "Get top n true indices");
-    m.def("add_counts", &add_counts, "Add counts");
+    m.def("get_data", &get_data, "Get data");
+    m.def("concat_mailbox", &concat_mailbox, "Concat mailbox");
 }
 
 

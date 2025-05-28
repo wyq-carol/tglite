@@ -28,7 +28,7 @@ import nvtx
 class BlockPool:
     """ Unity BlockPool """
     def __init__(self, total_mem_gb: int = 20, block_elements: int = 4300, device: str = "cuda"):
-        print("USING TORCH VERSION 10 alpha1")
+        print("USING TORCH VERSION 10 beta2")
         self.device = torch.device(device)
         self.block_elements = block_elements 
         self.element_size = torch.finfo(torch.float32).bits // 8  # 4 bytes
@@ -71,7 +71,7 @@ class BlockPool:
         print(f"  Memory Usage: {torch.sum(self.block_status) * self.block_elements * self.element_size / 1024**3:.2f} GB")
         
 class BlockManager:
-    def __init__(self, pool: BlockPool, source_tensor: torch.Tensor, feature_size: int, max_idx: int, init_blocks = 4000):
+    def __init__(self, pool: BlockPool, source_tensor: torch.Tensor, feature_size: int, max_idx: int, max_blocks = 4000):
         if pool.block_elements % feature_size != 0:
             raise ValueError(f"Feature size {feature_size} must divide block elements {pool.block_elements}")
         self.pool = pool
@@ -81,15 +81,21 @@ class BlockManager:
         self.source_tensor = source_tensor
         
         # a data table
-        self.data_table = torch.zeros(self.max_idx, dtype=torch.int32, device=pool.device) 
-        self.data_status = torch.zeros(self.max_idx, dtype=torch.bool, device=pool.device)
+        self.data_table = torch.full((self.max_idx, ), -1,  dtype=torch.int32, device=pool.device) 
         
         # a space table 
-        self.space_status = self.pool.generate_mem_map(self.num_slots_per_block)        
-        free_blocks = pool.allocate_block(init_blocks)
-        offsets = torch.arange(self.num_slots_per_block, dtype=torch.long, device=self.pool.device)      
-        positions = free_blocks.unsqueeze(1) * self.num_slots_per_block + offsets   
-        self.space_status[positions.flatten()] = 0
+        self.space_table = torch.full((max_blocks * self.num_slots_per_block, ), -1,  dtype=torch.int32, device=pool.device)   
+        self.space_status = torch.full((max_blocks * self.num_slots_per_block, ), -1,  dtype=torch.int32, device=pool.device)      
+        free_blocks = pool.allocate_block(max_blocks)
+        
+        block_ids = free_blocks.view(-1, 1)  # shape: [num_blocks, 1]
+        slot_offsets = torch.arange(self.num_slots_per_block, device=self.pool.device, dtype=torch.int32).view(1, -1)  # shape: [1, slots]
+        indices = block_ids * self.num_slots_per_block + slot_offsets  # shape: [num_blocks, slots]
+
+        indices = indices.reshape(-1)  # shape: [num_blocks * slots]
+        idx = torch.arange(max_blocks * self.num_slots_per_block, device=self.pool.device, dtype=torch.int32)
+        self.space_table[idx] = indices.to(torch.int32)  
+        self.space_status[idx] = 0       
         
         self.memory = self.pool.memory.reshape(-1, self.feature_size)
         
@@ -98,7 +104,8 @@ class BlockManager:
         pass
     
     def get_data_batch(self, indices: torch.Tensor) -> torch.Tensor:
-        pos = self.data_table[indices]
+        pos_ind = self.data_table[indices]
+        pos = self.space_table[pos_ind]
         return self.memory[pos]
     
     def update_data_batch(self, indices: torch.Tensor, data: torch.Tensor):
@@ -106,16 +113,15 @@ class BlockManager:
         invalid_indices = self.check_data_valid(indices)
         if (invalid_indices.size(0) > 0):
             self.alloc_for_batch(invalid_indices)
-            self.data_status[invalid_indices] = True
             
-        pos = self.data_table[indices]
+        pos_ind = self.data_table[indices]
+        pos = self.space_table[pos_ind]
         self.memory[pos] = data.to(self.pool.device)
         
     def check_data_valid(self, indices: torch.Tensor) -> torch.Tensor:
         """ check if indices are valid , return invalid indices """
-        valid = self.data_status[indices]
-        invalid = indices[~valid]
-        return invalid
+        invalid = self.data_table[indices] < 0
+        return indices[invalid]
     
     def alloc_for_batch(self, indices: torch.Tensor):
         """ waring : this is a !!!INSIDE API!!! """
@@ -145,10 +151,10 @@ class BlockManager:
         if (need_to_load.size(0) == 0):
             return 
         self.alloc_for_batch(need_to_load)
-        pos = self.data_table[indices_gpu]
+        pos_ind = self.data_table[indices_gpu]
         # TODO : mem abuse
+        pos = self.space_table[pos_ind]
         self.memory[pos] = self.source_tensor[indices].to('cuda')
-        self.data_status[indices_gpu] = True
         
     def unload_data(self, indices : torch.Tensor):
         pass
@@ -159,12 +165,13 @@ class BlockManager:
         free_blocks = torch.nonzero(self.space_status == 0, as_tuple=False).squeeze().to(torch.int32).size(0)
         print(f"  Total Blocks: {used_blocks + free_blocks}")
         print(f"  Free Blocks: {free_blocks}")
-        print(f"  Used Blocks: {used_blocks}")
         # print(f"  Cache Usage: {}")
 
 class MemMailManager:
-    def __init__(self, pool: BlockPool, feature_size: int, max_idx: int, efeat_manager: BlockManager, init_blocks = 4000):
-        print("USING TORCH VERSION 10 beta1")
+    def __init__(self, pool: BlockPool, feature_size: int, max_idx: int, efeat_manager: BlockManager, max_blocks = 4000, DEBUG = True):
+        self.DEBUG = DEBUG
+        
+        print("USING TORCH VERSION 10 beta2")
         print(f'maxidx: {max_idx}')
         if pool.block_elements % feature_size != 0:
             raise ValueError(f"Feature size {feature_size} must divide block elements {pool.block_elements}")
@@ -176,17 +183,23 @@ class MemMailManager:
 
         # latest data table 
         self.data_table = torch.full((self.max_idx, ), -1,  dtype=torch.int32, device=pool.device) 
-        self.data_status = torch.zeros(self.max_idx, dtype=torch.bool, device=pool.device) 
         
         # mailbox table
         self.mailbox_table = torch.full((self.max_idx, 2), -1, dtype=torch.int32, device=pool.device)
         
         # a space table (block num , slot num per block), True mains used        
-        self.space_status = self.pool.generate_mem_map(self.num_slots_per_block)        
-        free_blocks = pool.allocate_block(init_blocks)
-        offsets = torch.arange(self.num_slots_per_block, dtype=torch.long, device=self.pool.device)      
-        positions = free_blocks.unsqueeze(1) * self.num_slots_per_block + offsets   
-        self.space_status[positions.flatten()] = 0
+        self.space_table = torch.full((max_blocks * self.num_slots_per_block, ), -1,  dtype=torch.int32, device=pool.device)   
+        self.space_status = torch.full((max_blocks * self.num_slots_per_block, ), -1,  dtype=torch.int32, device=pool.device)      
+        free_blocks = pool.allocate_block(max_blocks)
+        
+        block_ids = free_blocks.view(-1, 1)  # shape: [num_blocks, 1]
+        slot_offsets = torch.arange(self.num_slots_per_block, device=self.pool.device, dtype=torch.int32).view(1, -1)  # shape: [1, slots]
+        indices = block_ids * self.num_slots_per_block + slot_offsets  # shape: [num_blocks, slots]
+
+        indices = indices.reshape(-1)  # shape: [num_blocks * slots]
+        idx = torch.arange(max_blocks * self.num_slots_per_block, device=self.pool.device, dtype=torch.int32)
+        self.space_table[idx] = indices.to(torch.int32)  
+        self.space_status[idx] = 0       
         self.memory = self.pool.memory.reshape(-1, self.feature_size)
         
         self.mem_time = torch.zeros(self.max_idx, dtype=torch.float32, device=pool.device)
@@ -196,14 +209,14 @@ class MemMailManager:
         self.efeat_manager = efeat_manager
         self.round = 1
         
-        self.uniq_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
-        self.nbr_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
+        if self.DEBUG:
+            self.uniq_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
+            self.nbr_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
 
 
     def reset(self):
         """ reset mem manager """
         self.data_table = torch.full((self.max_idx, ), -1,  dtype=torch.int32, device=self.pool.device)
-        self.data_status = torch.zeros(self.max_idx, dtype=torch.bool, device=self.pool.device)
         
         self.mailbox_table = torch.full((self.max_idx, 2), -1, dtype=torch.int32, device=self.pool.device)
         self.mail_time = torch.zeros(self.max_idx, dtype=torch.float32, device=self.pool.device)
@@ -212,8 +225,10 @@ class MemMailManager:
         self.mem_time = torch.zeros(self.max_idx, dtype=torch.float32, device=self.pool.device)
         self.space_status[self.space_status > 0] = 0 
         
-        self.uniq_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
-        self.nbr_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
+        if self.DEBUG:
+            self.uniq_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
+            self.nbr_tester = torch.zeros((self.max_idx, self.feature_size), dtype=torch.float32, device="cuda")
+
         
     
     def resize (self, need_slots: int):
@@ -222,75 +237,73 @@ class MemMailManager:
     
     
     def get_mem_data(self, indices: torch.Tensor) -> torch.Tensor:
-        pos = self.data_table[indices] 
-        mem_data = torch.zeros((len(pos), self.memory.size(1)), device=self.memory.device, dtype=self.memory.dtype)
-        valid_mask = pos != -1
-        valid_pos = pos[valid_mask]
+        pos_ind = self.data_table[indices] 
+        mem_data = torch.zeros((len(pos_ind), self.memory.size(1)), device=self.memory.device, dtype=self.memory.dtype)
+        valid_mask = pos_ind != -1
+        valid_pos = self.space_table[pos_ind[valid_mask]]
         mem_data[valid_mask] = self.memory[valid_pos]
         return mem_data
 
     def update_mem_batch(self, unique, counts, indices: torch.Tensor, data: torch.Tensor, time:torch.Tensor,  up_mailbox_uniq: torch.Tensor = None, up_mailbox_nbr: torch.Tensor = None):
-        """ update mem, if u dont tell me mailbox update info, i will conservatively dump to cache """
+        """ update mem """
         
-        old = self.data_table[indices]
-        self.space_status[old[old > 0]] -= 1
-        
+        slots = self.data_table[indices]
+        valid_slots = slots >= 0
+        self.space_status[slots[valid_slots]] -= 1
+
         drop_lines_mailbox = self.mailbox_table[up_mailbox_uniq]
-        mask = drop_lines_mailbox >= 0
-        filtered = drop_lines_mailbox[mask]
+        filtered = drop_lines_mailbox[drop_lines_mailbox >= 0]
         unique, counts = torch.unique(filtered, return_counts=True)
         self.space_status[unique] -= counts
-        
-        
-        tobe_replaced_slots = self.data_table[indices]
-        has_ref = self.space_status[tobe_replaced_slots] > 0
-        tobe_replaced_indices_pos = has_ref.nonzero(as_tuple=True)[0]
-        tobe_replaced_indices = indices[tobe_replaced_indices_pos]
-        self.data_status[tobe_replaced_indices] = False
+
+        has_ref = self.space_status[slots] > 0
+        tobe_replaced_indices = indices[has_ref]
         self.data_table[tobe_replaced_indices] = -1
-        
-        old = self.data_table[indices]
-        self.space_status[old[old > 0]] += 1
+
+        slots = self.data_table[indices]
+        valid_slots = slots >= 0
+        self.space_status[slots[valid_slots]] += 1
+
         
 
         with nvtx.annotate("check", color='purple'):
-            invalid_indices, _ = self.check_data_valid(indices)
+            invalid_indices = indices[self.data_table[indices] < 0]
         with nvtx.annotate("alloc", color='purple'):
             if (invalid_indices.size(0) > 0):
-                # print(f"invalid indices: {invalid_indices}")
                 self.alloc_for_batch(invalid_indices)
-                self.data_status[invalid_indices] = True
                 
-        unique, counts = torch.unique(torch.cat((up_mailbox_uniq, up_mailbox_nbr)), return_counts=True)
+        with nvtx.annotate("unique", color='yellow'):
+            unique, counts = torch.unique(torch.cat((up_mailbox_uniq, up_mailbox_nbr)), return_counts=True)
         slot_idx = self.data_table[unique]
         mask = slot_idx >= 0
         self.space_status[slot_idx[mask]] += counts[mask]
             
         with nvtx.annotate("update", color='orange'):
-            pos = self.data_table[indices]
+            pos_ind = self.data_table[indices]
+            pos = self.space_table[pos_ind]
             self.memory[pos] = data.to(self.pool.device)
             self.mem_time[indices] = time
             
-        uniq = up_mailbox_uniq
-        nbr = up_mailbox_nbr
-        uniq_pos = self.data_table[uniq]
-        nbr_pos  = self.data_table[nbr]
-        self.mailbox_table[uniq] = torch.stack((uniq_pos, nbr_pos), dim=1)
-
-        self.uniq_tester[uniq] = self.get_mem_data(uniq)
-        self.nbr_tester[uniq] = self.get_mem_data(nbr)
             
-        uniq_pos = self.mailbox_table[uniq][:, 0]
-        nbr_pos  = self.mailbox_table[uniq][:, 1]
-        uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
-        nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
-        uniq_data[uniq_pos >= 0] = self.memory[uniq_pos[uniq_pos >= 0]]
-        nbr_data[nbr_pos >= 0] = self.memory[nbr_pos[nbr_pos >= 0]]
-        
-        if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
-            raise Exception(f"wrong at {self.round}")
-        if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
-            raise Exception(f"wrong at {self.round}")
+        if self.DEBUG:
+            uniq = up_mailbox_uniq
+            nbr = up_mailbox_nbr
+            uniq_pos_ind = self.data_table[uniq]
+            nbr_pos_ind  = self.data_table[nbr]
+            self.mailbox_table[uniq] = torch.stack((uniq_pos_ind, nbr_pos_ind), dim=1)
+
+            self.uniq_tester[uniq] = self.get_mem_data(uniq)
+            self.nbr_tester[uniq] = self.get_mem_data(nbr)
+                
+            uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+            nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
+            uniq_data[uniq_pos_ind >= 0] = self.memory[self.space_table[uniq_pos_ind[uniq_pos_ind >= 0]]]
+            nbr_data[nbr_pos_ind >= 0] = self.memory[self.space_table[nbr_pos_ind[nbr_pos_ind >= 0]]]
+            
+            if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
+                raise Exception(f"wrong at {self.round}")
+            if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
+                raise Exception(f"wrong at {self.round}")
         
         self.round += 1
         
@@ -298,7 +311,7 @@ class MemMailManager:
         
     def check_data_valid(self, indices: torch.Tensor) -> torch.Tensor:
         """ check if indices are valid , return invalid indices """
-        valid = self.data_status[indices]
+        valid = self.data_table[indices] >= 0
         invalid = indices[~valid]
         valid = indices[valid]
         return invalid, valid
@@ -318,25 +331,24 @@ class MemMailManager:
 
     def get_mailbox_data(self, uniq: torch.Tensor)->torch.Tensor:
         """ get mailbox data """
-        uniq_pos = self.mailbox_table[uniq][:, 0]
-        nbr_pos  = self.mailbox_table[uniq][:, 1]
+        uniq_pos_ind = self.mailbox_table[uniq][:, 0]
+        nbr_pos_ind  = self.mailbox_table[uniq][:, 1]
         
         uniq_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
         nbr_data = torch.zeros((uniq.size(0), self.feature_size), device=self.pool.device, dtype=torch.float32)
-        uniq_data[uniq_pos >= 0] = self.memory[uniq_pos[uniq_pos >= 0]]
-        nbr_data[nbr_pos >= 0] = self.memory[nbr_pos[nbr_pos >= 0]]
+        uniq_data[uniq_pos_ind >= 0] = self.memory[self.space_table[uniq_pos_ind[uniq_pos_ind >= 0]]]
+        nbr_data[nbr_pos_ind >= 0] = self.memory[self.space_table[nbr_pos_ind[nbr_pos_ind >= 0]]]
         
-        if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
-            raise Exception(f"wrong at {self.round}")
-        if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
-            raise Exception(f"wrong at {self.round}")
+        if self.DEBUG:
+            if not torch.allclose(uniq_data, self.uniq_tester[uniq], rtol = 1e-5):
+                raise Exception(f"wrong at {self.round}")
+            if not torch.allclose(nbr_data, self.nbr_tester[uniq], rtol = 1e-5):
+                raise Exception(f"wrong at {self.round}")
         
         efeat = self.efeat_manager.get_data_batch(self.mail_efeat_table[uniq])
         out = torch.cat((uniq_data, nbr_data, efeat), dim=1)
         
         return out
-        
-        
     
     
     def get_mailbox_time(self, indices: torch.Tensor):
@@ -360,20 +372,14 @@ class MemMailManager:
         self.mail_time[uniq] = time
         self.mail_efeat_table[uniq] = efeat
         
-        
-        # self.uniq_tester[uniq] = self.get_mem_data(uniq)
-        # self.nbr_tester[uniq] = self.get_mem_data(nbr)
-        
 
     def print_status(self):
         print(f"BlockManager: ")
-        print(f"  Total Blocks: {self.num_blocks_got}")
-        print(f"  Block Elements: {self.num_slots_per_block}")
-        print(f"  Element Size: {self.feature_size} bytes")
-        print(f"  Total Memory: {self.num_blocks_got * self.num_slots_per_block * self.feature_size / 1024**3:.2f} GB")
-        print(f"  Free Blocks: {self.num_blocks_got - torch.sum(self.space_status)}")
-        print(f"  Used Blocks: {torch.sum(self.space_status)}")
-        print(f"  Memory Usage: {torch.sum(self.space_status) * self.num_slots_per_block * self.feature_size / 1024**3:.2f} GB")
+        used_blocks = torch.nonzero(self.space_status == 1, as_tuple=False).squeeze().to(torch.int32).size(0)
+        free_blocks = torch.nonzero(self.space_status == 0, as_tuple=False).squeeze().to(torch.int32).size(0)
+        print(f"  Total Blocks: {used_blocks + free_blocks}")
+        print(f"  Free Blocks: {free_blocks}")
+        print(f"  Used Blocks: {used_blocks}")
 
 
 if __name__ == "__main__":

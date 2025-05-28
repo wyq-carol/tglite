@@ -7,8 +7,7 @@ import nvtx
 from tglite._sampler import TSampler
 from tglite._utils import create_tcsr, check_num_nodes
 import tglite._c as _c
-import custom_unique
-# TODO offline+online?
+import torch
 
 def dedup(blk):
     """
@@ -131,31 +130,6 @@ def iter_edges(g: MockGraph, size=1, start=None, end=None):
     """
     return EdgesIter(g, size=size, start=start, end=end)
 
-
-def sample_baseline(blk, sampler):
-    """
-    Performs the baseline sampling method.
-
-    :param blk: MockBlock instance
-    :param sampler: TSampler instance
-    :return: Time taken for sampling
-    """
-    start_time = time.time()
-    with nvtx.annotate("sample baseline", color="red"):
-        blk, _ = dedup(blk)  # dedup and cache
-        blk = sampler.sample(blk)
-        time_delta = blk._dsttimes[blk._dstindex] - blk._ets
-        unique_time_delta, inverse_time_delta = np.unique(time_delta, return_inverse=True)
-        all_nids = np.concatenate([blk._dstnodes, blk._srcnodes])
-        unique_nids, inverse_nids = np.unique(all_nids, return_inverse=True)
-        unique_eids, inverse_eids = np.unique(blk._eid, return_inverse=True)
-        unique_dstnodes, inverse_dstnodes = np.unique(inverse_nids[:blk._dstnodes.shape[0]], return_inverse=True)
-        unique_srcnodes, inverse_srcnodes = np.unique(inverse_nids[blk._dstnodes.shape[0]:], return_inverse=True)
-        x = np.arange(blk._srcnodes.shape[0])
-        Q_node_idx = inverse_dstnodes[blk._dstindex[x]]
-        reindex = np.unique(blk._dstindex, return_inverse=True)[1]
-    return time.time() - start_time
-
 # TODO
 def sample_our(blk, sampler):
     """
@@ -166,28 +140,73 @@ def sample_our(blk, sampler):
     :return: Time taken for sampling
     """
     with nvtx.annotate("sample our", color="red"):
-        # 先全转为tensor进行测试
-        start_time = time.time() # 重写数据结构，全部使用Tensor # 如果掩盖不住就没法prefetch，放上去看一下吧 不然没必要拆分offline和online
-        blk, _ = dedup(blk)  # dedup and cache
+        blk, b_inv_idx = dedup(blk)  # dedup and cache
         blk = sampler.sample(blk)
-        b_dstindex = torch.tensor(blk._dstindex)
-        b_dsttimes = torch.tensor(blk._dsttimes)
-        b_ets = torch.tensor(blk._ets)
-        b_dstnodes = torch.tensor(blk._dstnodes)
-        b_srcnodes = torch.tensor(blk._srcnodes)
-        b_eid = torch.tensor(blk._eid)
-        time_delta = b_dsttimes[b_dstindex] - b_ets
-        all_nids = torch.cat([b_dstnodes, b_srcnodes])
-        unique_time_delta, inverse_time_delta = torch.unique_consecutive(time_delta, return_inverse=True)
-        unique_nids, inverse_nids = torch.unique_consecutive(all_nids, return_inverse=True)
-        unique_eids, inverse_eids = torch.unique_consecutive(b_eid, return_inverse=True)
-        unique_dstnodes, inverse_dstnodes = torch.unique_consecutive(inverse_nids[:b_dstnodes.shape[0]], return_inverse=True)
-        unique_srcnodes, inverse_srcnodes = torch.unique_consecutive(inverse_nids[b_dstnodes.shape[0]:], return_inverse=True)
-        x = torch.arange(b_srcnodes.shape[0])
-        Q_node_idx = inverse_dstnodes[b_dstindex[x]]
-        reindex = torch.unique(b_dstindex, return_inverse=True)[1]
-    return time.time() - start_time
 
+def sample_our_21(blk, sampler):
+    """
+    Performs the custom sampling method.
+
+    :param blk: MockBlock instance
+    :param sampler: TSampler instance
+    :return: Time taken for sampling
+    """
+    with nvtx.annotate("sample our", color="red"):
+        # 先全转为tensor进行测试
+        blk, b_inv_idx = dedup(blk)  # dedup and cache
+        blk = sampler.sample(blk)
+
+_mailboxUpd_samples = None
+
+class MemSimulator:
+    def __init__(self, max_nids):
+        self.max_nids = max_nids
+        self.mem = torch.zeros((max_nids), dtype=torch.int32, device='cuda')
+        self.mailbox = torch.zeros((max_nids, 2), dtype=torch.int32, device='cuda') - 1
+
+    def simulate_mangaer(self, idx, uniq, nbr, bid):
+        unique, counts = torch.unique(self.mailbox, return_counts=True)
+        cache_mask = unique >= self.max_nids
+        cache_idx = unique[cache_mask] - self.max_nids
+        counts = counts[cache_mask].to(torch.int32)
+        cache = torch.zeros((2 * self.max_nids), dtype=torch.int32, device='cuda')
+        if cache_idx.shape[0] > 0:
+            cache[cache_idx] = counts
+        
+        all_indices = torch.arange(self.max_nids, device='cuda')
+        keep_indices = all_indices[~torch.isin(all_indices, uniq)]
+        un_updated = self.mailbox[keep_indices]
+        unique, counts = torch.unique(un_updated, return_counts=True)
+        mask = torch.isin(unique, idx)
+        cached = unique[mask]
+        counts = counts[mask]
+        
+        free_cache = torch.nonzero(cache == 0, as_tuple=True)[0].to(torch.int32) #id
+        cid = free_cache[: cached.shape[0]] + self.max_nids
+        
+        cached = cached.sort().values
+        if cached.shape[0] > 0:
+            flat = self.mailbox.flatten()
+            idx = torch.bucketize(flat, cached, right=False)
+            valid_idx = idx < cached.size(0)
+            matched = torch.zeros_like(flat, dtype=torch.bool)
+            matched[valid_idx] = flat[valid_idx] == cached[idx[valid_idx]]
+            flat[matched] = cid[idx[matched]]
+            table_replaced = flat.view_as(self.mailbox)
+            self.mailbox = table_replaced
+
+        self.mailbox[uniq] = torch.stack((uniq, nbr), dim = 1).to(torch.int32)
+        self.mem[idx] += 1
+        
+        # print(f"{}")
+        with open("stack_l2_b2_output.txt", "a") as f:
+            print(f"mem_mailbox usage in [round {bid}] : [{(cache > 0).sum().item() + (self.mem > 0).sum().item()}]", file=f, flush=True)
+    
+    
+    
+    
+    
+    
 
 def run_sampling_test(g, sampler, sampling_config):
     """
@@ -197,13 +216,12 @@ def run_sampling_test(g, sampler, sampling_config):
     :param sampler: TSampler instance
     :param sampling_config: Dictionary containing sampling configuration
     """
-    time_counts_baseline = []
-    time_counts_our = []
-
     edge_iter = iter_edges(g, size=sampling_config['batch_size'], end=sampling_config['train_end'])
 
+    mem_sim = MemSimulator(2601977)
     for b_id, idx, end in edge_iter:
-        if b_id > sampling_config['test_batch_id']:
+        print(f"b_id {b_id}")
+        if b_id > 500:
             break
 
         neg_nodes = sampling_config['neg_sampler'](sampling_config['batch_size'])
@@ -214,40 +232,46 @@ def run_sampling_test(g, sampler, sampling_config):
         times = np.tile(g._times[idx:end], 3).astype(np.float32)
         blk = MockBlock(g, nids, times)
 
-        # Sample baseline
-        time_count = sample_baseline(blk, sampler)
-        if b_id > 1:
-            time_counts_baseline.append(time_count)
-
         # Sample our
-        blk = MockBlock(g, nids, times)
-        time_count = sample_our(blk, sampler)
-        if b_id > 1:
-            time_counts_our.append(time_count)
+        if sampling_config['LAYER'] == 1:
+            blk = MockBlock(g, nids, times)
+            time_count = sample_our(blk, sampler)
+            # memory 1. nids torch.cat([blk._dstnodes, blk._srcnodes]).unique
+            # mailbox 
+            
 
-        if sampling_config['LAYER'] > 1:
-            # 2 layer
+        if sampling_config['LAYER'] == 2:
+            blk = MockBlock(g, nids, times)
+            time_count = sample_our_21(blk, sampler)
             next_dstnodes = np.concatenate([blk._dstnodes, blk._srcnodes])
             next_dsttimes = np.concatenate([blk._dsttimes, blk._ets])
             blk = MockBlock(g, next_dstnodes, next_dsttimes)
 
-            # Sample baseline
-            time_count = sample_baseline(blk, sampler)
-            if b_id > 1:
-                time_counts_baseline.append(time_count)
-
             # Sample our
             blk = MockBlock(g, next_dstnodes, next_dsttimes)
             time_count = sample_our(blk, sampler)
-            if b_id > 1:
-                time_counts_our.append(time_count)
+            
+        
 
-    print(f"Baseline: {1000 * sum(time_counts_baseline) / len(time_counts_baseline):>10.4f}ms")
-    print(f"Our     : {1000 * sum(time_counts_our) / len(time_counts_our):>10.4f}ms")
+        # here
+        # memory data indices torch.unique([np.concatenate([blk._dstnodes, blk._srcnodes])])
+        # mailbox_ref_uniq, mailbox_ref_counts, mailbox_uniq, mailbox_nbrs, mailbox_ets, mailbox_eid = _mailboxUpd_samples[b_id]
+        idx = torch.unique(torch.from_numpy(np.concatenate([blk._dstnodes, blk._srcnodes])).to('cuda'))
+        # print(blk._dstnodes, blk._srcnodes)
+        # mem_sim.simulate_mangaer(idx, mailbox_uniq.to('cuda'), mailbox_nbrs.to('cuda'), b_id)
+        uniq = torch.randperm(2601977, dtype=torch.int32)[:5000].to('cuda')
+        nbr = torch.randperm(2601977, dtype=torch.int32)[:5000].to('cuda')
+
+
+        mem_sim.simulate_mangaer(idx, uniq,nbr, b_id)
 
 
 if __name__ == "__main__":
-    # Load graph
+    
+    # simulate_mangaer(None, None, None, torch.tensor([0, 1, 2], device='cuda'), torch.tensor([2, 1], device='cuda'), torch.tensor([0, 2], device='cuda'), 3)
+    
+    print("here")
+    # ! Load graph
     # df = pd.read_csv(os.path.join('', '/home/volume/wiki-talk/edges.csv'))
     # df = pd.read_csv(os.path.join('', '/home/volume/lastfm/edges.csv'))
     df = pd.read_csv(os.path.join('', '/home/volume/stackoverflow/edges.csv'))
@@ -266,17 +290,21 @@ if __name__ == "__main__":
         'N_NBRS': 10,
         'SAMPLING': 'recent',
         'N_THREADS': 8,
+        # ! layer
         'LAYER': 2,
         'TEST_B_ID': 5,
+        # ! batchsize
         'batch_size': 2000,
         'train_end': int(np.ceil(g.num_edges() * 0.7)),
         'val_end': int(np.ceil(g.num_edges() * (0.7 + 0.15))),
         'test_batch_id': 5
     }
-    print(f"BS {sampling_config['batch_size']} LAYER {sampling_config['LAYER']} DATA {'wiki-talk'}")
+    print(f"BS {sampling_config['batch_size']} LAYER {sampling_config['LAYER']} DATA {''}")
 
     # Initialize sampler
     sampler = TSampler(sampling_config['N_NBRS'], strategy=sampling_config['SAMPLING'], num_threads=sampling_config['N_THREADS'])
 
+    # ! add pt
+    # _mailboxUpd_samples = torch.load('/home/volume/tglake_res/tglake_res_mailboxUpd/TRAIN_mailboxUpdBatchs_DATA_lastfm_BS_2000_NLAYER_1_NBR_10_NHEAD_2.pt')
     # Run sampling test
     run_sampling_test(g, sampler, sampling_config)

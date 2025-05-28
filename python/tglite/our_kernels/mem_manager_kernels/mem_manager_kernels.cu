@@ -21,23 +21,11 @@ using namespace std;
 
 
 
-/*
-get_mem_data_kernel:
-    input:
-        mem_slots: the number of mem per block
-        dim: the dimension of mem
-        indices: [0, nids) to index mem
-        data_table: the data table, Index from nid to block id and slot id
-        data_status: which nid is valid
-        memory: the whole memory of memory pool
-    output:
-        output: res torch tensor
-*/
-__global__ void get_mem_data_kernel(
-    const int32_t mem_slots, const int32_t dim, 
+__global__ void get_data_kernel(
+    const int32_t dim, 
     const int32_t *__restrict__ indices,       			// [K]
-    const int32_t *__restrict__ data_table,   	   		// [N,2]
-    const bool *__restrict__ data_status,  	  	  	// [N]
+    const int32_t *__restrict__ data_table,   	   		// [N]
+    const int32_t *__restrict__ space_table,            // [S]
     const float *__restrict__ memory,     			// [P,dim]
 
     float *__restrict__ output)      // [K,dim]
@@ -46,36 +34,27 @@ __global__ void get_mem_data_kernel(
 	int32_t row = indices[t];                  
 
     int32_t fid = threadIdx.x;
+	int32_t memory_pos_ind = row < 0 ? -1 : data_table[row];
+    int64_t target_offset = static_cast<int64_t>(t) * dim + fid;
 
-	bool mem_valid = data_status[row];
-
-	int32_t memory_pos;
-
-	if (mem_valid) {
-		int32_t bid = data_table[row * 2 + 0];
-		int32_t sid = data_table[row * 2 + 1];
-		memory_pos = bid * mem_slots + sid;
-	} else {
-		memory_pos = -1;
-	}
-
-	size_t offset = static_cast<size_t>(memory_pos) * dim + fid;
-	float v = memory_pos == -1? 0.0 : memory[offset];
-	size_t out_col = fid;
-	offset = static_cast<size_t>(t) * dim + out_col;
-
-	output[ offset ] = v;
+    if (memory_pos_ind < 0) {
+        output[ target_offset ] = 0.0f;
+    } else {
+        int64_t memory_pos = space_table[memory_pos_ind];
+        int64_t offset = static_cast<int64_t>(memory_pos) * dim + fid;
+        float v = memory[offset];
+        output[ target_offset ] = v;
+    }
 }
 			
 
 torch::Tensor
-get_mem_data(const int32_t mem_slots,
+get_data(
     torch::Tensor indices,
     torch::Tensor data_table,
-    torch::Tensor data_status,
+    torch::Tensor space_table,
     torch::Tensor memory
     ) {
-
     const int32_t K   = indices.size(0);
     const int32_t dim = memory.size(1);
     auto opts = torch::TensorOptions()
@@ -85,82 +64,30 @@ get_mem_data(const int32_t mem_slots,
     // output ：N × dim
     auto output = torch::empty({K, dim}, opts);
 
-    // launch kernel：grid=(N,1,1)， block=(dim,1,1)
-    get_mem_data_kernel<<<dim3(K, 1, 1), dim>>>(
-        mem_slots,  dim,
+    // launch kernel：grid=(K,1,1)， block=(dim,1,1)
+    get_data_kernel<<<dim3(K, 1, 1), dim>>>(
+        dim,
         indices.data_ptr<int32_t>(),
         data_table.data_ptr<int32_t>(),
-        data_status.data_ptr<bool>(),
+        space_table.data_ptr<int32_t>(),
         memory.data_ptr<float>(),
         output.data_ptr<float>()
     );
 
     return output;
-	}
-
-
-
-/*
-get_feat_data_kernel:
-    input:
-        num_slots: the number of feat per block
-        feature_size: the dimension of feat
-        indices: [0, nids) to index feat
-        data_table: the data table, Index from nid to block id and slot id
-        memory: the whole memory of feat pool
-    output:
-        output: res torch tensor
-*/
-__global__ void get_feat_kernel(
-    const int32_t num_slots,
-    const int32_t feature_size,
-    const int32_t *__restrict__ indices,
-    const int32_t *__restrict__ data_table, 
-    const float *__restrict__ memory,
-    float * output)
-{
-  int32_t lid = blockIdx.x;
-  int32_t tid = threadIdx.x;
-
-  int32_t row = indices[lid];
-
-  int32_t blk_id = data_table[row * 2];
-  int32_t slot_id = data_table[row * 2 + 1];
-  size_t pos = static_cast<size_t>(blk_id) * num_slots + slot_id;
-  output[lid * feature_size + tid] = memory[pos * feature_size + tid];
-}
-
-torch::Tensor
-get_feat_data(const int32_t num_slots, torch::Tensor indices,
-              torch::Tensor data_table, torch::Tensor memory)
-{
-    const int32_t output_x = indices.size(0);
-    const int32_t output_y = memory.size(1);
-    auto devid = memory.device().index();
-    auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA, devid);
-    torch::Tensor output = torch::empty({output_x, output_y}, options);
-    get_feat_kernel<<<dim3(output_x, 1, 1), output_y>>>(
-        num_slots,
-        output_y,
-        indices.data_ptr<int32_t>(), 
-        data_table.data_ptr<int32_t>(), 
-        memory.data_ptr<float>(),
-        output.data_ptr<float>());
-    return output;
 }
 
 
-using namespace std;
-__global__ void get_mailbox_data_kernel(
-    const int32_t K, const int32_t N, const int32_t mem_dim, const int32_t ef_dim, const int32_t mem_slots, const int32_t ef_slots, 
+__global__ void concat_mailbox_kernel(
+    const int32_t K, const int32_t mem_dim, const int32_t ef_dim,
     const int32_t *__restrict__ indices,       // [K]
     const int32_t *__restrict__ mailbox_table,       // [N,2]
-    const int32_t *__restrict__ data_table,       // [M1,2]
-    const int32_t *__restrict__ cache_table,       // [M2,2]
-    const float *__restrict__ memory,     // [P,dim]
+    const int32_t *__restrict__ mem_space_table,
+    const float *__restrict__ mem_memory,     // [P,dim]
 
 	const int32_t *__restrict__ mailbox_efeat,       // [N]
     const int32_t *__restrict__ efeat_data_table,       // [N, 2]
+    const int32_t *__restrict__ efeat_space_table,
     const float *__restrict__ efeat_memory,     // [P,dim]
     float *__restrict__ output)      // [K,2*dim]
 {
@@ -183,77 +110,62 @@ __global__ void get_mailbox_data_kernel(
 	}     
 
 	if (task != 2) {
-		int32_t mailbox_ch = mailbox_table[row * 2 + task];
-		int32_t bid, sid;
-		int32_t memory_pos;  
-		if (mailbox_ch == -1) {
-			memory_pos = -1;
-		} else if (mailbox_ch < N) {
-			bid = data_table[mailbox_ch * 2 + 0];
-			sid = data_table[mailbox_ch * 2 + 1];
-			memory_pos = bid * mem_slots + sid;
-		} else {
-			mailbox_ch = mailbox_ch - N;
-			bid = cache_table[mailbox_ch * 2 + 0];
-			sid = cache_table[mailbox_ch * 2 + 1];
-			memory_pos = bid * mem_slots + sid;
-		}
-		size_t offset = static_cast<size_t>(memory_pos) * mem_dim + fid;
-		float v = memory_pos == -1 ? 0.0 : memory[offset];
-		size_t out_col = task * mem_dim + fid;
-		offset = static_cast<size_t>(t) * (2 * mem_dim + ef_dim) + out_col;
-		output[ offset ] = v;
+		int32_t memory_pos_ind = mailbox_table[row * 2 + task];
+        int64_t out_col = task * mem_dim + fid;
+		int64_t target_offset = static_cast<int64_t>(t) * (2 * mem_dim + ef_dim) + out_col;
+        if (memory_pos_ind < 0) {
+            output[ target_offset ] = 0.0f;
+        } else {
+            int64_t memory_pos = mem_space_table[memory_pos_ind];
+            int64_t offset = static_cast<int64_t>(memory_pos) * mem_dim + fid;
+            output[ target_offset ] = mem_memory[offset];
+        }
 	} else {
-		int32_t efeat_ch = mailbox_efeat[row];
-		int32_t bid, sid;
-		int32_t memory_pos;
-		if (efeat_ch == -1) {
-			memory_pos = -1;
-		} else {
-			bid = efeat_data_table[efeat_ch * 2 + 0];
-			sid = efeat_data_table[efeat_ch * 2 + 1];
-			memory_pos = bid * ef_slots + sid;
-		}
-		size_t offset = static_cast<size_t>(memory_pos) * ef_dim + fid;
-		float v = memory_pos == -1? 0.0 : efeat_memory[offset];
-		size_t out_col = 2 * mem_dim + fid;
-		offset = static_cast<size_t>(t) * (2 * mem_dim + ef_dim) + out_col;
-		output[ offset ] = v;
-}
+        int32_t memory_pos_ind = mailbox_efeat[row];
+        memory_pos_ind = memory_pos_ind < 0 ? -1 : efeat_data_table[memory_pos_ind];
+        int64_t out_col = 2 * mem_dim + fid;
+		int64_t target_offset = static_cast<int64_t>(t) * (2 * mem_dim + ef_dim) + out_col;
+        if (memory_pos_ind < 0) {
+            output[ target_offset ] = 0.0f;
+        } else {
+            int64_t memory_pos = efeat_space_table[memory_pos_ind];
+            int64_t offset = static_cast<int64_t>(memory_pos) * mem_dim + fid;
+            output[ target_offset ] = efeat_memory[offset];
+        }
+    }
 }
 				
 torch::Tensor
-get_mailbox_data(const int32_t mem_slots,
-	const int32_t ef_slots,
+concat_mailbox(
 	torch::Tensor indices,
 	torch::Tensor mailbox_table, 
-	torch::Tensor data_table,
-	torch::Tensor cache_table,
-	torch::Tensor memory,
+    torch::Tensor mem_space_table,
+	torch::Tensor mem_memory,
 
 	torch::Tensor mailbox_efeat,
 	torch::Tensor efeat_data_table,
+    torch::Tensor efeat_space_table,
 	torch::Tensor efeat_memory
 	) {
 
 	const int32_t K   = indices.size(0);
-	const int32_t N   = mailbox_table.size(0);
-	const int32_t mem_dim = memory.size(1);
+	const int32_t mem_dim = mem_memory.size(1);
 	const int32_t ef_dim = efeat_memory.size(1);
 	const int32_t dim = mem_dim * 2 + ef_dim;
 	auto opts = torch::TensorOptions()
 					.dtype(torch::kFloat32)
-					.device(torch::kCUDA, memory.device().index());
+					.device(torch::kCUDA, mem_memory.device().index());
 	auto output = torch::empty({K, dim}, opts);
 
-	get_mailbox_data_kernel<<<dim3(K, 1, 1), dim>>>(
-		K,  N,  mem_dim, ef_dim , mem_slots, ef_slots,
+	concat_mailbox_kernel<<<dim3(K, 1, 1), dim>>>(
+		K, mem_dim, ef_dim,
 		indices.data_ptr<int32_t>(), 
 		mailbox_table.data_ptr<int32_t>(),
-		data_table.data_ptr<int32_t>(), cache_table.data_ptr<int32_t>(),
-		memory.data_ptr<float>(),
+        mem_space_table.data_ptr<int32_t>(),
+		mem_memory.data_ptr<float>(),
 		mailbox_efeat.data_ptr<int32_t>(),
 		efeat_data_table.data_ptr<int32_t>(),
+        efeat_space_table.data_ptr<int32_t>(),
 		efeat_memory.data_ptr<float>(),
 		output.data_ptr<float>());
 

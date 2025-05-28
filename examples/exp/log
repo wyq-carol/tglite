@@ -1,0 +1,12 @@
+Namespace(all_on_gpu=0, block_mem_on=1, bsize=2000, data='wiki-talk', data_path='', dim_embed=100, dim_time=100, dropout=0.1, epochs=2, gpu=0, lr=0.0001, move=True, n_heads=2, n_layers=1, n_nbrs=10, n_threads=8, offline_sample=0, on_heter=0, on_statistic=0, opt_all=False, opt_dedup=False, opt_time=False, perf_ceil=0, perf_ceil_base=0, prefix='exp', sampling='recent', seed=0, time_window=10000.0)
+PERF_CEIL 0, PERF_CEIL_BASE 0
+ON_HETER 0, OFFLINE_SAMPLE 0
+ON_STATISTIC 0, ALL_ON_GPU 0
+TEST_BLKM 1
+num edges: 7833140
+num nodes: 1140149
+edge feat: torch.Size([7833140, 172])
+node feat: torch.Size([1140149, 100])
+maxidx: 1140149
+data_table[indices].shape = torch.Size([1140149, 2])
+space_table[alloc].shape = torch.Size([1140149, 2, 2])
