@@ -20,12 +20,18 @@ export PYTHONPATH="$examples_dir"
 #     --n-layers 2 --n-heads 2 --n-nbrs 10 \
 #     --sampling recent "$@"
 # bs == 6000
-python tgn/train.py -d wiki --seed 0 --prefix exp \
-    --epochs 1 --bsize 6000 --n-threads 64 \
-    --n-layers 2 --n-heads 2 --n-nbrs 10 \
-    --sampling recent "$@"
+# python tgn/train.py -d wiki-talk --seed 0 --prefix exp --move \
+#     --epochs 1 --bsize 6000 --n-threads 8 \
+#     --n-layers 1 --n-heads 2 --n-nbrs 10 \
+#     --sampling recent "$@"
 
-python tgn/train.py -d wiki --seed 0 --prefix exp --move \
-    --epochs 1 --bsize 6000 --n-threads 64 \
-    --n-layers 2 --n-heads 2 --n-nbrs 10 \
+# 0.7 0.15 0.15
+# python tgn/train.py -d wiki-talk --seed 0 --prefix exp --move --opt-all \
+#     --epochs 50 --bsize 200 --n-threads 8 \
+#     --n-layers 1 --n-heads 2 --n-nbrs 10 \
+#     --sampling recent "$@"
+
+python tgn/train.py -d wiki-talk --seed 0 --prefix exp --move --opt-all \
+    --epochs 1 --bsize 6000 --n-threads 8 \
+    --n-layers 1 --n-heads 2 --n-nbrs 10 \
     --sampling recent "$@"

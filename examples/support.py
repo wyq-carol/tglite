@@ -25,6 +25,27 @@ def make_device(gpu: int) -> torch.device:
     return torch.device(f'cuda:{gpu}' if gpu >= 0 else 'cpu')
 
 
+def make_infer_model_path(model: str, prefix: str, data: str) -> str:
+    """If prefix is not empty, return 'saved_models/{model}/{prefix}-{data}.pt', else return
+    'saved_models/{model}/{data}-{time.time()}.pt'."""
+    if prefix:
+        return f'models/{model}/{prefix}-{data}.pt'
+    else:
+        return f'models/{model}/{data}-{time.time()}.pt'
+
+def make_infer_model_mem_path(model: str, prefix: str, data: str) -> str:
+    if prefix:
+        return f'models/{model}/{prefix}-{data}-mem.pt'
+    else:
+        return f'models/{model}/{data}-mem-{time.time()}.pt'
+
+def make_infer_model_mail_path(model: str, prefix: str, data: str) -> str:
+    if prefix:
+        return f'models/{model}/{prefix}-{data}-mail.pt'
+    else:
+        return f'models/{model}/{data}-mail-{time.time()}.pt'
+
+
 def make_model_path(model: str, prefix: str, data: str) -> str:
     """If prefix is not empty, return 'models/{model}/{prefix}-{data}.pt', else return
     'models/{model}/{data}-{time.time()}.pt'."""
@@ -34,13 +55,19 @@ def make_model_path(model: str, prefix: str, data: str) -> str:
     else:
         return f'models/{model}/{data}-{time.time()}.pt'
 
-
 def make_model_mem_path(model: str, prefix: str, data: str) -> str:
     Path(f'models/{model}').mkdir(parents=True, exist_ok=True)
     if prefix:
         return f'models/{model}/{prefix}-{data}-mem.pt'
     else:
         return f'models/{model}/{data}-mem-{time.time()}.pt'
+
+def make_model_mail_path(model: str, prefix: str, data: str) -> str:
+    Path(f'models/{model}').mkdir(parents=True, exist_ok=True)
+    if prefix:
+        return f'models/{model}/{prefix}-{data}-mail.pt'
+    else:
+        return f'models/{model}/{data}-mail-{time.time()}.pt'
 
 
 def load_graph(path: Union[str, Path]) -> tg.TGraph:
@@ -118,7 +145,7 @@ class LinkPredTrainer(object):
                  criterion: nn.Module, optimizer: torch.optim.Optimizer,
                  neg_sampler: Callable, epochs: int, bsize: int,
                  train_end: int, val_end: int,
-                 model_path: str, model_mem_path: Optional[str]):
+                 model_path: str, model_mem_path: Optional[str], model_mail_path: Optional[str]):
         self.ctx = ctx
         self.g = ctx.graph
         self.model = model
@@ -131,6 +158,7 @@ class LinkPredTrainer(object):
         self.val_end = val_end
         self.model_path = model_path
         self.model_mem_path = model_mem_path
+        self.model_mail_path = model_mail_path
 
     def train(self):
         # import pdb; pdb.set_trace()
@@ -185,6 +213,8 @@ class LinkPredTrainer(object):
                 torch.save(self.model.state_dict(), self.model_path)
                 if self.g.mem is not None:
                     torch.save(self.g.mem.backup(), self.model_mem_path)
+                if self.g.mailbox is not None:
+                    torch.save(self.g.mailbox.backup(), self.model_mail_path)
             print('  loss:{:.4f} val ap:{:.4f} val auc:{:.4f}'.format(epoch_loss, ap, auc))
             tt.csv_write_line(epoch=e)
             tt.print_epoch()
@@ -211,10 +241,14 @@ class LinkPredTrainer(object):
         return np.mean(val_aps), np.mean(val_auc)
 
     def test(self):
-        print('loading saved checkpoint and testing model...')
+        print('loading saved checkpoint from "{}" and testing model...'.format(self.model_path))
         self.model.load_state_dict(torch.load(self.model_path))
         if self.g.mem is not None:
             self.g.mem.restore(torch.load(self.model_mem_path))
+        if self.g.mailbox is not None:
+            self.g.mailbox.restore(torch.load(self.model_mail_path))
+
+        print("TESTING using BS: ", self.bsize)
         t_test = tt.start()
         ap, auc = self.eval(start_idx=self.val_end)
         t_test = tt.elapsed(t_test)

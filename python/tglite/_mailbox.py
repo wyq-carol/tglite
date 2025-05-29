@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 from torch import Tensor
-from typing import List, Union
-
+from typing import Tuple, List, Union
+from ._core import TError
 
 class Mailbox(object):
     """A container for node mailbox messages."""
@@ -56,3 +56,15 @@ class Mailbox(object):
         self._mail = self._mail.to(device, **kwargs)
         self._time = self._time.to(device, **kwargs)
         self._device = device
+
+    def backup(self) -> Tuple[Tensor, Tensor]:
+        return (self._mail.cpu().clone(), self._time.cpu().clone())
+
+    def restore(self, state: Tuple[Tensor, Tensor]):
+        mail, time = state
+        if self._mail.shape != mail.shape:
+            raise TError('memory data dimension mismatch')
+        if self._time.shape != time.shape:
+            raise TError('memory timestamp dimension mismatch')
+        self._mail = mail.clone().to(self._device)
+        self._time = time.clone().to(self._device)
